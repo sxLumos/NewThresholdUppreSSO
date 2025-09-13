@@ -23,4 +23,5 @@ public final class SystemConfig {
     // Server thread pool size
     public static final int SERVER_THREADS = 10;
     public static final int RP_SERVER_THREADS = 10;
+    public static final int CONCURRENT_REQUEST_THREADS = 10;
 }

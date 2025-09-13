@@ -8,6 +8,7 @@ import storage.RedisStorage;
 import utils.CryptoUtil;
 import utils.Lagrange;
 import utils.Pair;
+import utils.SimpleBenchmark;
 import verifier.ThresholdRSAJWTVerifier;
 
 import java.io.IOException;
@@ -17,6 +18,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.IntStream;
 
 /**
  * 使用网络通信的客户端
@@ -29,12 +34,17 @@ public class NetworkClient {
     private static final String USER_ID_KEY = "user_id";
     private static final MessageDigest DIGEST;
     private final ClientNetworkManager networkManager;
-    private final RedisStorage redisStorage;
+    private List<Pair<Integer, Pair<String, String>>> tokenShare;
+    private static final int benchmarkRuns = 10;
+    private BigInteger r;
+//    private final RedisStorage redisStorage;
+    private static final ExecutorService executor;
     private PublicKey publicKey;
     
     static {
         try {
             DIGEST = MessageDigest.getInstance("SHA-256");
+            executor = Executors.newFixedThreadPool(SystemConfig.CONCURRENT_REQUEST_THREADS);
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("No such hash algorithm", e);
         }
@@ -42,6 +52,7 @@ public class NetworkClient {
     
     public static void main(String[] args) {
         try {
+
             NetworkClient client = new NetworkClient("shenxin", "123456");
 
             // 初始化系统（这里需要先启动服务器）
@@ -51,28 +62,49 @@ public class NetworkClient {
             } catch (IOException e) {
                 e.printStackTrace();
             }
+            // 1. 在所有操作开始前，重置一次计数器
+            client.networkManager.resetCounters();
 
-            long a = System.currentTimeMillis();
-            client.register(numOfServer, threshold);
-            long b = System.currentTimeMillis();
-            System.out.printf("User Register: %d ms\n", b - a);
+            Runnable userRegisterTask = () -> client.register(numOfServer, threshold);
+            Runnable userTokenRequestTask = client::login;
+            Runnable userTokenVerify = client::verify;
+            double a = SimpleBenchmark.getAverageTime(benchmarkRuns, userRegisterTask);
+            double b = SimpleBenchmark.getAverageTime(benchmarkRuns, userTokenRequestTask);
+            double c = SimpleBenchmark.getAverageTime(benchmarkRuns, userTokenVerify);
+            System.out.printf("User注册耗时: %.0f ms\n", a);
+            System.out.printf("User请求Token耗时: %.0f ms\n", b);
+            System.out.printf("验证Token耗时: %.0f ms\n", c);
+            // 2. 在所有操作结束后，获取并打印总的通信代价
+            long totalSent = client.networkManager.getTotalBytesSent();
+            long totalReceived = client.networkManager.getTotalBytesReceived();
+            long totalComm = totalSent + totalReceived;
 
-            // 模拟多次登录
-            for (int i = 0; i < 1; i++) {
-                client.login();
-            }
+            System.out.printf(
+                    "\n============================================\n" +
+                            "      总通信代价统计 (所有操作合计)\n" +
+                            "--------------------------------------------\n" +
+                            "  - 总发送量: %.2f KB\n" +
+                            "  - 总接收量: %.2f KB\n" +
+                            "  - 总通信量: %.2f KB\n" +
+                            "============================================\n",
+                    (double) totalSent / (1024.0 * benchmarkRuns),
+                    (double) totalReceived / (1024.0 * benchmarkRuns),
+                    (double) totalComm / (1024.0 * benchmarkRuns)
+            );
+            executor.shutdown();
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
+            executor.shutdown();
             RedisStorage.getInstance().close();
         }
     }
-    
+
     public NetworkClient(String username, String password) {
         this.username = username;
         this.password = password;
         this.networkManager = new ClientNetworkManager();
-        this.redisStorage = RedisStorage.getInstance();
+//        this.redisStorage = RedisStorage.getInstance();
     }
     
     public void register(int n, int t) {
@@ -100,15 +132,45 @@ public class NetworkClient {
             }
             
 //            saveUserIDToRedis(UserID);
-            
-            // 通过网络发送注册请求
-            NetworkMessage response = networkManager.sendUserRegisterRequest(
-                privateKeyShareEnc, privateKeyShareUserID, serverStoreRecord);
-            
-            if (networkManager.isSuccessResponse(response)) {
-                System.out.println("✅ 用户注册成功");
+
+            // 1. 并发发送所有注册请求，并将每个请求的结果（成功/失败）转换为一个布尔值
+            List<CompletableFuture<Boolean>> futures = IntStream.rangeClosed(1, numOfServer)
+                    .mapToObj(sid -> CompletableFuture.supplyAsync(() ->
+                                    // 在后台线程池中执行网络请求
+                                    networkManager.sendUserRegisterRequest(
+                                            sid,
+                                            privateKeyShareEnc.get(sid - 1).getSecond(),
+                                            privateKeyShareUserID.get(sid - 1).getSecond(),
+                                            serverStoreRecord.get(sid - 1)
+                                    ), executor)
+                            .handle((response, ex) -> {
+                                // .handle() 会处理正常结果(response)或异常(ex)
+                                if (ex != null || !networkManager.isSuccessResponse(response)) {
+                                    // 如果有异常，或者响应内容表示失败
+                                    ex.printStackTrace();
+                                    String errorMessage = (ex != null)
+                                            ? ex.getCause().getMessage()
+                                            : networkManager.getErrorMessage(response);
+                                    System.err.println("❌ 用户注册失败(sid=" + sid + "): " + errorMessage);
+                                    return false; // 代表此请求失败
+                                }
+                                return true; // 代表此请求成功
+                            }))
+                    .toList();
+
+            // 2. 等待所有请求完成，然后统计失败的个数
+            long failedCount = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .thenApply(v -> futures.stream()
+                            .map(CompletableFuture::join) // 获取每个任务的布尔结果
+                            .filter(isSuccess -> !isSuccess) // 筛选出所有失败的结果(false)
+                            .count() // 计算失败的总数
+                    ).join(); // 阻塞等待最终的计数值
+
+            // 3. 根据失败计数，打印最终的总结信息
+            if (failedCount == 0) {
+                System.out.println("✅ 所有 " + numOfServer + " 个用户注册请求均已成功。");
             } else {
-                System.err.println("❌ 用户注册失败: " + networkManager.getErrorMessage(response));
+                System.err.println("❌ " + failedCount + " 个用户注册请求失败，请检查上面的错误日志。");
             }
             
         } catch (Exception e) {
@@ -119,7 +181,7 @@ public class NetworkClient {
     
     public void login() {
         try {
-            long a = System.currentTimeMillis();
+//            long a = System.currentTimeMillis();
             // 通过TOPRF与t个IdP在线计算UserID（不再从Redis读取）
             byte[] userInputForUserId = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
             ECPoint h1_userId = CryptoUtil.hashToPoint(userInputForUserId);
@@ -228,7 +290,7 @@ public class NetworkClient {
             // 生成盲化输入（用于加密token份额的TOPRF）
             byte[] userInput = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
             ECPoint h1x = CryptoUtil.hashToPoint(userInput);
-            BigInteger r = CryptoUtil.randomScalar();
+            this.r = CryptoUtil.randomScalar();
             ECPoint blindedPoint_a = h1x.multiply(r).normalize();
             
             long startTimeSec = System.currentTimeMillis() / 1000L;
@@ -240,80 +302,78 @@ public class NetworkClient {
                 int sid = rand.nextInt(numOfServer) + 1;
                 chosen.add(sid);
             }
-//            System.out.println(chosen);
-            List<Pair<Integer, Pair<String, String>>> tokenShares = new ArrayList<>();
-            for (int sid : chosen) {
-                NetworkMessage resp = networkManager.sendTokenShareRequestToServerId(
-                        sid,
-                        UserID,
-                        CryptoUtil.bytesToHex(blindedPoint_a.getEncoded(true)),
-                        startTimeSec,
-                        infos
-                );
-                if (networkManager.isSuccessResponse(resp)) {
-                    tokenShares.addAll(networkManager.deserializeTokenShares(resp));
-                }
-            }
+            //            System.out.println(chosen);
+            List<CompletableFuture<NetworkMessage>> futures = chosen.stream()
+                    .map(sid -> CompletableFuture.supplyAsync(() ->
+                                    // 将网络请求作为任务提交到线程池
+                                    networkManager.sendTokenShareRequestToServerId(
+                                            sid,
+                                            UserID,
+                                            CryptoUtil.bytesToHex(blindedPoint_a.getEncoded(true)),
+                                            startTimeSec,
+                                            infos
+                                    ), executor) // 使用您的线程池
+                            .exceptionally(ex -> {
+                                // 如果某个请求出现异常（如超时），打印错误并返回null
+                                System.err.println("获取服务器 " + sid + " 的Token份额失败: " + ex.getMessage());
+                                return null; // 返回null，以便后续可以过滤掉失败的请求
+                            }))
+                    .toList();
 
-            long b = System.currentTimeMillis();
-            System.out.printf("Token Request (t servers): %d ms\n", b - a);
+            // 2. 等待所有请求完成，然后统一处理结果
+            List<Pair<Integer, Pair<String, String>>> tokenShares = futures.stream()
+                    .map(CompletableFuture::join) // 等待每个异步任务完成并获取结果
+                    .filter(Objects::nonNull) // 过滤掉因异常而返回null的任务
+                    .filter(networkManager::isSuccessResponse) // 过滤出业务上成功的响应
+                    .flatMap(resp -> networkManager.deserializeTokenShares(resp).stream()) // 将每个成功响应中的份额列表(List)展开成一个流(Stream)
+                    .toList(); // 将所有份额收集到一个最终的列表中
+
+
+//            long b = System.currentTimeMillis();
+//            System.out.printf("Token Request (t servers): %d ms\n", b - a);
             
             if (!tokenShares.isEmpty()) {
-                a = System.currentTimeMillis();
-                List<Pair<Integer, Pair<String, ECPoint>>> processedShares = new ArrayList<>();
-                
-                for (Pair<Integer, Pair<String, String>> share : tokenShares) {
-                    int serverId = share.getFirst();
-                    String encryptedToken = share.getSecond().getFirst();
-                    ECPoint ecPoint = CryptoUtil.decodePointFromHex(share.getSecond().getSecond());
-                    processedShares.add(Pair.of(serverId, Pair.of(encryptedToken, ecPoint)));
-                }
-                
-                byte[] y = combineTOPRFShare(r, processedShares);
-                List<byte[]> keys = generateSymmetricKeys(y);
-                String completeToken = ThresholdRSAJWTVerifier.combineJwtShares(keys, processedShares, publicKey, threshold);
-                
-                b = System.currentTimeMillis();
-                System.out.printf("Token Construct: %d ms\n", b - a);
-
-                // 通过RP服务器验证令牌
-                a = System.currentTimeMillis();
-                NetworkMessage verifyResponse = networkManager.sendTokenVerifyRequest(completeToken);
-                
-                if (networkManager.isSuccessResponse(verifyResponse)) {
-                    // 去盲化
-                    String pidUBase64FromJwt = (String) verifyResponse.getData().get("pid_u");
-                    byte[] pidUBytes = Base64.getUrlDecoder().decode(pidUBase64FromJwt);
-                    ECPoint blindedPidUFromJwt = CryptoUtil.EC_SPEC.getCurve().decodePoint(pidUBytes);
-                    
-                    BigInteger t_inverse = t.modInverse(CryptoUtil.ORDER);
-                    ECPoint final_IDU_IDRP = blindedPidUFromJwt.multiply(t_inverse).normalize();
-                    // final_IDU_IDRP 可以用于后续的身份验证逻辑
-                    
-                    b = System.currentTimeMillis();
-                    System.out.printf("Token Verify: %d ms\n", b - a);
-                    System.out.println("\n🎉 SUCCESS: 登录成功！");
-                    System.out.println("Token验证通过RP服务器完成");
-                } else {
-                    System.err.println("❌ Token验证失败: " + networkManager.getErrorMessage(verifyResponse));
-                }
-                
+                tokenShare = tokenShares;
             } else {
                 System.err.println("❌ 令牌请求失败: 未获取到足够的份额");
             }
-            
         } catch (Exception e) {
-            System.err.println("❌ 登录过程中发生错误: " + e.getMessage());
+            System.err.println("❌ 令牌请求过程中发生错误: " + e.getMessage());
             e.printStackTrace();
         }
     }
-    
-    /**
-     * 获取RP的公钥（这里简化处理，实际应该从服务器获取）
-     */
-    private ECPoint getRPPublicKey() {
-        // 这里应该从服务器获取RP的公钥，现在简化处理
-        return CryptoUtil.GENERATOR.multiply(BigInteger.valueOf(12345)).normalize();
+    public void verify() {
+        List<Pair<Integer, Pair<String, ECPoint>>> processedShares = new ArrayList<>();
+
+        for (Pair<Integer, Pair<String, String>> share : tokenShare) {
+            int serverId = share.getFirst();
+            String encryptedToken = share.getSecond().getFirst();
+            ECPoint ecPoint = CryptoUtil.decodePointFromHex(share.getSecond().getSecond());
+            processedShares.add(Pair.of(serverId, Pair.of(encryptedToken, ecPoint)));
+        }
+
+        byte[] y = combineTOPRFShare(r, processedShares);
+        List<byte[]> keys = generateSymmetricKeys(y);
+        String completeToken = ThresholdRSAJWTVerifier.combineJwtShares(keys, processedShares, publicKey, threshold);
+
+        // 通过RP服务器验证令牌
+        NetworkMessage verifyResponse = networkManager.sendTokenVerifyRequest(completeToken);
+
+        if (networkManager.isSuccessResponse(verifyResponse)) {
+            // 去盲化
+//                    String pidUBase64FromJwt = (String) verifyResponse.getData().get("pid_u");
+//                    byte[] pidUBytes = Base64.getUrlDecoder().decode(pidUBase64FromJwt);
+//                    ECPoint blindedPidUFromJwt = CryptoUtil.EC_SPEC.getCurve().decodePoint(pidUBytes);
+//
+//                    BigInteger t_inverse = t.modInverse(CryptoUtil.ORDER);
+//                    ECPoint final_IDU_IDRP = blindedPidUFromJwt.multiply(t_inverse).normalize();
+            // final_IDU_IDRP 可以用于后续的身份验证逻辑
+
+            System.out.println("\n🎉 SUCCESS: 登录成功！");
+            System.out.println("Token验证通过RP服务器完成");
+        } else {
+            System.err.println("❌ Token验证失败: " + networkManager.getErrorMessage(verifyResponse));
+        }
     }
     
     public static byte[] combineTOPRFShare(BigInteger r, List<Pair<Integer, Pair<String, ECPoint>>> shares) {
@@ -373,29 +433,29 @@ public class NetworkClient {
         return Pair.of(masterPrivateKey, TOPRFKeyShare);
     }
     
-    public void saveUserIDToRedis(byte[] userID) {
-        try {
-            String userKey = USER_ID_KEY + ":" + username;
-            String userIDHex = CryptoUtil.bytesToHex(userID);
-            redisStorage.storeClientData(userKey, userIDHex);
-            System.out.println("✅ 用户ID已保存到Redis");
-        } catch (Exception e) {
-            System.err.println("❌ 保存用户ID到Redis失败: " + e.getMessage());
-            throw new RuntimeException("Failed to save UserID to Redis.", e);
-        }
-    }
+//    public void saveUserIDToRedis(byte[] userID) {
+//        try {
+//            String userKey = USER_ID_KEY + ":" + username;
+//            String userIDHex = CryptoUtil.bytesToHex(userID);
+//            redisStorage.storeClientData(userKey, userIDHex);
+//            System.out.println("✅ 用户ID已保存到Redis");
+//        } catch (Exception e) {
+//            System.err.println("❌ 保存用户ID到Redis失败: " + e.getMessage());
+//            throw new RuntimeException("Failed to save UserID to Redis.", e);
+//        }
+//    }
     
-    public byte[] loadUserIDFromRedis() {
-        try {
-            String userKey = USER_ID_KEY + ":" + username;
-            String userIDHex = redisStorage.retrieveClientData(userKey);
-            if (userIDHex != null) {
-                return CryptoUtil.hexToBytes(userIDHex);
-            }
-            return null;
-        } catch (Exception e) {
-            System.err.println("❌ 从Redis加载用户ID失败: " + e.getMessage());
-            return null;
-        }
-    }
+//    public byte[] loadUserIDFromRedis() {
+//        try {
+//            String userKey = USER_ID_KEY + ":" + username;
+//            String userIDHex = redisStorage.retrieveClientData(userKey);
+//            if (userIDHex != null) {
+//                return CryptoUtil.hexToBytes(userIDHex);
+//            }
+//            return null;
+//        } catch (Exception e) {
+//            System.err.println("❌ 从Redis加载用户ID失败: " + e.getMessage());
+//            return null;
+//        }
+//    }
 }

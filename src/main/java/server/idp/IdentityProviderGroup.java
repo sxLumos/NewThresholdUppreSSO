@@ -45,7 +45,7 @@ public class IdentityProviderGroup {
         BigInteger n = (BigInteger) nObj;
         for (int i = 0; i < numOfServer; i++) {
             TokenGenerator tokenGenerator = new ThresholdRSAJWTTokenGenerator(n, allShares.get(i).getSecond(), allShares.get(i).getFirst());
-            idps.add(new IdentityProvider(i + 1, tokenGenerator)); // ServerID begin from 1
+            idps.add(new IdentityProvider(i + 1, this.getPublicKey(),tokenGenerator)); // ServerID begin from 1
         }
     }
 

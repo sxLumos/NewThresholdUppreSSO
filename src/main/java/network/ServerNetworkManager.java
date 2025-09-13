@@ -2,6 +2,7 @@ package network;
 
 import config.SystemConfig;
 import org.bouncycastle.math.ec.ECPoint;
+import server.idp.IdentityProvider;
 import server.idp.IdentityProviderGroup;
 import utils.CryptoUtil;
 import utils.Pair;
@@ -21,14 +22,14 @@ public class ServerNetworkManager {
     private static final int BASE_PORT = SystemConfig.BASE_PORT;
     private static final int MAX_THREADS = SystemConfig.SERVER_THREADS;
     
-    private final IdentityProviderGroup idpGroup;
+    private final IdentityProvider idp;
     private final ExecutorService threadPool;
     private final int serverId;
     private final int serverPort;
     private volatile boolean running;
     
-    public ServerNetworkManager(IdentityProviderGroup idpGroup, int serverId) {
-        this.idpGroup = idpGroup;
+    public ServerNetworkManager(IdentityProvider idp, int serverId) {
+        this.idp = idp;
         this.serverId = serverId;
         this.serverPort = BASE_PORT + serverId;
         this.threadPool = Executors.newFixedThreadPool(MAX_THREADS);
@@ -144,25 +145,25 @@ public class ServerNetworkManager {
             Map<String, Object> data = request.getData();
             
             // 反序列化数据
-            List<Pair<Integer, BigInteger>> keyShareEnc = deserializeKeyShares(
-                (List<Map<String, Object>>) data.get("keyShareEnc"));
-            List<Pair<Integer, BigInteger>> keyShareUserID = deserializeKeyShares(
-                (List<Map<String, Object>>) data.get("keyShareUserID"));
-            List<Pair<byte[], byte[]>> serverStoreRecord = deserializeServerStoreRecord(
-                (List<Map<String, Object>>) data.get("serverStoreRecord"));
-            
+            BigInteger keyShareEnc = new BigInteger((String) data.get("keyShareEnc"), 16);
+            BigInteger keyShareUserID = new BigInteger((String) data.get("keyShareUserID"), 16);
+            Map<String, Object> recordData = (Map<String, Object>) data.get("serverStoreRecord");
+            Pair<byte[], byte[]> serverStoreRecord = Pair.of(
+                    CryptoUtil.hexToBytes((String) recordData.get("lookupKey"))
+                    , CryptoUtil.hexToBytes((String) recordData.get("symmetricKey")));
+
             // 执行用户注册
-            idpGroup.performUserRegister(keyShareEnc, keyShareUserID, serverStoreRecord);
-            
+            idp.performUserRegister(keyShareEnc, keyShareUserID, serverStoreRecord);
+
             // 创建成功响应
             Map<String, Object> responseData = new HashMap<>();
             responseData.put("success", true);
-            responseData.put("message", "用户注册成功");
+            responseData.put("message", "IdP_%d处用户注册成功".formatted(this.idp.getSid()));
             
             return new NetworkMessage(MessageTypes.REGISTER_RESPONSE, request.getRequestId(), responseData);
             
         } catch (Exception e) {
-            System.err.println("❌ 用户注册失败: " + e.getMessage());
+            System.err.println("❌ IdP_%d处用户注册失败: ".formatted(this.idp.getSid()) + e.getMessage());
             return createErrorResponse(request.getRequestId(), "用户注册失败: " + e.getMessage());
         }
     }
@@ -185,7 +186,7 @@ public class ServerNetworkManager {
             ECPoint blindedPoint = CryptoUtil.decodePointFromHex(blindedPointHex);
             
             // 仅生成本地服务器份额
-            Pair<Integer, Pair<String, ECPoint>> localShare = idpGroup.generateTokenShareFor(this.serverId + 1, userID, blindedPoint, startTimeSec, info);
+            Pair<Integer, Pair<String, ECPoint>> localShare = idp.generateTokenShareFor(userID, blindedPoint, startTimeSec, info);
 
             Map<String, Object> responseData = new HashMap<>();
             responseData.put("success", localShare != null);
@@ -227,7 +228,6 @@ public class ServerNetworkManager {
 
             // 本地服务器生成签名份额
             int sid = this.serverId + 1;
-            server.idp.IdentityProvider idp = idpGroup.getIdp(sid);
             BigInteger sigShare = idp.generateSignatureShare(contentBytes);
 
             Map<String, Object> responseData = new HashMap<>();
@@ -237,7 +237,7 @@ public class ServerNetworkManager {
             responseData.put("idRp", CryptoUtil.bytesToHex(idRp.getEncoded(true)));
             responseData.put("sigShare", sigShare.toString(16));
             try {
-                byte[] pkEncoded = idpGroup.getPublicKey().getEncoded();
+                byte[] pkEncoded = idp.getPublicKey().getEncoded();
                 String pkBase64 = Base64.getEncoder().encodeToString(pkEncoded);
                 responseData.put("publicKey", pkBase64);
             } catch (Exception ignore) {}
@@ -260,7 +260,6 @@ public class ServerNetworkManager {
             if (blindedPointHex == null) return createErrorResponse(request.getRequestId(), "缺少盲化点");
             ECPoint blindedPoint = CryptoUtil.decodePointFromHex(blindedPointHex);
             int sid = this.serverId + 1;
-            server.idp.IdentityProvider idp = idpGroup.getIdp(sid);
             ECPoint bi = idp.evaluateKeyUserID(blindedPoint);
 
             Map<String, Object> resp = new HashMap<>();

@@ -6,8 +6,10 @@ import utils.Pair;
 
 import java.io.*;
 import java.math.BigInteger;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 客户端网络管理器，负责与服务器进行网络通信
@@ -17,259 +19,143 @@ public class ClientNetworkManager {
     private static final int BASE_PORT = SystemConfig.BASE_PORT;
     private static final int RP_SERVER_PORT = SystemConfig.RP_SERVER_PORT; // RP服务器端口
     private static final int CONNECTION_TIMEOUT = SystemConfig.CONNECTION_TIMEOUT_MS; // 5秒超时
-    private static final int NUM_SERVERS = SystemConfig.NUM_SERVERS;
+    // --- START: 添加用于测量通信代价的成员 ---
+    private final AtomicLong totalBytesSent = new AtomicLong(0);
+    private final AtomicLong totalBytesReceived = new AtomicLong(0);
+    // --- END: 添加成员 ---
     
     private final Random random;
     
     public ClientNetworkManager() {
         this.random = new Random();
     }
-    
     /**
-     * 发送用户注册请求
+     * 重置通信代价计数器。
      */
-    public NetworkMessage sendUserRegisterRequest(List<Pair<Integer, BigInteger>> keyShareEnc, 
-                                                List<Pair<Integer, BigInteger>> keyShareUserID,
-                                                List<Pair<byte[], byte[]>> serverStoreRecord) {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("keyShareEnc", serializeKeyShares(keyShareEnc));
-            data.put("keyShareUserID", serializeKeyShares(keyShareUserID));
-            data.put("serverStoreRecord", serializeServerStoreRecord(serverStoreRecord));
-            
-            return sendRequest(MessageTypes.USER_REGISTER, data);
+    public void resetCounters() {
+        totalBytesSent.set(0);
+        totalBytesReceived.set(0);
+    }
+
+    /**
+     * 获取发送的总字节数。
+     */
+    public long getTotalBytesSent() {
+        return totalBytesSent.get();
+    }
+
+    /**
+     * 获取接收的总字节数。
+     */
+    public long getTotalBytesReceived() {
+        return totalBytesReceived.get();
+    }
+
+    /**
+     * [重构后] 所有网络请求的核心执行方法。
+     * 在这里统一处理Socket通信和通信代价的测量。
+     *
+     * @param host    目标主机
+     * @param port    目标端口
+     * @param request 要发送的NetworkMessage对象
+     * @return 从服务器接收到的NetworkMessage对象，或在失败时返回一个错误响应
+     */
+    private NetworkMessage executeRequest(String host, int port, NetworkMessage request) {
+        // 1. 测量请求(Request)对象的大小
+        long requestSize = getObjectSize(request);
+        totalBytesSent.addAndGet(requestSize);
+
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), CONNECTION_TIMEOUT);
+
+            // 发送请求
+            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+            out.writeObject(request);
+            out.flush();
+
+            // 接收响应
+            ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+            NetworkMessage response = (NetworkMessage) in.readObject();
+
+            // 2. 测量响应(Response)对象的大小
+            long responseSize = getObjectSize(response);
+            totalBytesReceived.addAndGet(responseSize);
+
+            return response;
+
         } catch (Exception e) {
-            System.err.println("❌ 发送用户注册请求失败: " + e.getMessage());
-            return createErrorResponse("用户注册请求失败: " + e.getMessage());
+            // 注意：客户端本地创建的错误响应不计入通信代价
+            return createErrorResponse("网络通信失败 (" + host + ":" + port + "): " + e.getMessage());
         }
     }
-    
+
     /**
-     * 发送令牌请求
+     * [辅助方法] 通过将对象序列化到字节数组来计算其大小。
+     * @param obj 需要计算大小的可序列化对象。
+     * @return 对象的字节大小，如果序列化失败则返回0。
      */
-    public NetworkMessage sendTokenRequest(byte[] userID, String blindedPointHex, 
-                                         long startTimeSec, Map<String, Object> info) {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("userID", CryptoUtil.bytesToHex(userID));
-            data.put("blindedPoint", blindedPointHex);
-            data.put("startTimeSec", startTimeSec);
-            data.put("info", info);
-            
-            return sendRequest(MessageTypes.TOKEN_REQUEST, data);
-        } catch (Exception e) {
-            System.err.println("❌ 发送令牌请求失败: " + e.getMessage());
-            return createErrorResponse("令牌请求失败: " + e.getMessage());
+    private long getObjectSize(Serializable obj) {
+        if (obj == null) {
+            return 0;
+        }
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+            oos.writeObject(obj);
+            return baos.size();
+        } catch (IOException e) {
+            System.err.println("对象序列化失败，无法计算大小: " + e.getMessage());
+            return 0;
         }
     }
-    
-    /**
-     * 发送RP注册请求
-     */
-    public NetworkMessage sendRPRegisterRequest() {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            return sendRequest(MessageTypes.RP_REGISTER, data);
-        } catch (Exception e) {
-            System.err.println("❌ 发送RP注册请求失败: " + e.getMessage());
-            return createErrorResponse("RP注册请求失败: " + e.getMessage());
-        }
+
+    public NetworkMessage sendUserRegisterRequest(int serverId, BigInteger keyShareEnc,
+                                                  BigInteger keyShareUserID,
+                                                  Pair<byte[], byte[]> serverStoreRecord) {
+        Map<String, Object> data = new HashMap<>();
+        data.put("keyShareEnc", keyShareEnc.toString(16));
+        data.put("keyShareUserID", keyShareUserID.toString(16));
+        Map<String, String> recordData = new HashMap<>();
+        recordData.put("lookupKey", CryptoUtil.bytesToHex(serverStoreRecord.getFirst()));
+        recordData.put("symmetricKey", CryptoUtil.bytesToHex(serverStoreRecord.getSecond()));
+        data.put("serverStoreRecord", recordData);
+
+        NetworkMessage request = new NetworkMessage(MessageTypes.USER_REGISTER, generateRequestId(), data);
+        int serverPort = BASE_PORT + (serverId - 1);
+
+        return executeRequest(SERVER_HOST, serverPort, request);
     }
-    
-    /**
-     * 发送RP登录请求
-     */
-    public NetworkMessage sendRPLoginRequest(String username, String password) {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("username", username);
-            data.put("password", password);
-            return sendRPRequest(MessageTypes.RP_LOGIN_REQUEST, data);
-        } catch (Exception e) {
-            System.err.println("❌ 发送RP登录请求失败: " + e.getMessage());
-            return createErrorResponse("RP登录请求失败: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * 发送Token验证请求到RP
-     */
+
     public NetworkMessage sendTokenVerifyRequest(String jwtToken) {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("jwtToken", jwtToken);
-            return sendRPRequest(MessageTypes.TOKEN_VERIFY_REQUEST, data);
-        } catch (Exception e) {
-            System.err.println("❌ 发送Token验证请求失败: " + e.getMessage());
-            return createErrorResponse("Token验证请求失败: " + e.getMessage());
-        }
+        Map<String, Object> data = new HashMap<>();
+        data.put("jwtToken", jwtToken);
+        NetworkMessage request = new NetworkMessage(MessageTypes.TOKEN_VERIFY_REQUEST, generateRequestId(), data);
+        return executeRequest(SERVER_HOST, RP_SERVER_PORT, request);
     }
-    
-    /**
-     * 发送RP证书请求
-     */
+
     public NetworkMessage sendRPCertRequest() {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            return sendRPRequest(MessageTypes.RP_CERT_REQUEST, data);
-        } catch (Exception e) {
-            System.err.println("❌ 发送RP证书请求失败: " + e.getMessage());
-            return createErrorResponse("RP证书请求失败: " + e.getMessage());
-        }
+        NetworkMessage request = new NetworkMessage(MessageTypes.RP_CERT_REQUEST, generateRequestId(), new HashMap<>());
+        return executeRequest(SERVER_HOST, RP_SERVER_PORT, request);
     }
 
-    /**
-     * 请求指定 serverId 的 UserID OPRF 份额 b_i
-     */
     public NetworkMessage sendUserIdOPRFShareRequestToServerId(int serverId, String blindedPointHex) {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("blindedPoint", blindedPointHex);
-
-            String requestId = generateRequestId();
-            NetworkMessage request = new NetworkMessage(MessageTypes.USERID_OPRF_REQUEST, requestId, data);
-
-            int serverPort = BASE_PORT + (serverId - 1);
-            try (Socket socket = new Socket()) {
-                socket.connect(new java.net.InetSocketAddress(SERVER_HOST, serverPort), CONNECTION_TIMEOUT);
-                ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                out.writeObject(request);
-                out.flush();
-                ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-                return (NetworkMessage) in.readObject();
-            }
-        } catch (Exception e) {
-            return createErrorResponse("请求UserID OPRF到 server " + serverId + " 失败: " + e.getMessage());
-        }
+        Map<String, Object> data = new HashMap<>();
+        data.put("blindedPoint", blindedPointHex);
+        NetworkMessage request = new NetworkMessage(MessageTypes.USERID_OPRF_REQUEST, generateRequestId(), data);
+        int serverPort = BASE_PORT + (serverId - 1);
+        return executeRequest(SERVER_HOST, serverPort, request);
     }
 
-    /**
-     * 解析 USERID_OPRF_RESPONSE 的份额列表（单返回）
-     */
-    public Pair<Integer, String> deserializeUserIdOPRFShare(NetworkMessage response) {
-        if (response.getData() != null && Boolean.TRUE.equals(response.getData().get("success"))) {
-            int serverId = Integer.parseInt((String) response.getData().get("serverId"));
-            String ecPointHex = (String) response.getData().get("ecPoint");
-            return Pair.of(serverId, ecPointHex);
-        }
-        return null;
-    }
-    
-    /**
-     * 发送网络请求的通用方法，随机选择一个服务器
-     */
-    private NetworkMessage sendRequest(String messageType, Map<String, Object> data) {
-        String requestId = generateRequestId();
-        NetworkMessage request = new NetworkMessage(messageType, requestId, data);
-        
-        // 随机选择一个服务器端口（单份额请求时可用）
-        int serverPort = BASE_PORT + random.nextInt(NUM_SERVERS);
-        
-        try (Socket socket = new Socket()) {
-            socket.connect(new java.net.InetSocketAddress(SERVER_HOST, serverPort), CONNECTION_TIMEOUT);
-            
-            // 发送请求
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(request);
-            out.flush();
-            
-            // 接收响应
-            ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-            NetworkMessage response = (NetworkMessage) in.readObject();
-            
-            System.out.println("✅ 网络请求发送成功: " + messageType + " (服务器端口: " + serverPort + ")");
-            return response;
-            
-        } catch (Exception e) {
-            System.err.println("❌ 网络通信失败 (端口 " + serverPort + "): " + e.getMessage());
-            return createErrorResponse("网络通信失败: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 向给定serverId请求本地token share
-     */
     public NetworkMessage sendTokenShareRequestToServerId(int serverId, byte[] userID, String blindedPointHex, long startTimeSec, Map<String, Object> info) {
-        try {
-            Map<String, Object> data = new HashMap<>();
-            data.put("userID", CryptoUtil.bytesToHex(userID));
-            data.put("blindedPoint", blindedPointHex);
-            data.put("startTimeSec", startTimeSec);
-            data.put("info", info);
+        Map<String, Object> data = new HashMap<>();
+        data.put("userID", CryptoUtil.bytesToHex(userID));
+        data.put("blindedPoint", blindedPointHex);
+        data.put("startTimeSec", startTimeSec);
+        data.put("info", info);
+        NetworkMessage request = new NetworkMessage(MessageTypes.TOKEN_REQUEST, generateRequestId(), data);
+        int serverPort = BASE_PORT + (serverId - 1);
+        return executeRequest(SERVER_HOST, serverPort, request);
+    }
 
-            String requestId = generateRequestId();
-            NetworkMessage request = new NetworkMessage(MessageTypes.TOKEN_REQUEST, requestId, data);
-
-            int serverPort = BASE_PORT + (serverId - 1);
-            try (Socket socket = new Socket()) {
-                socket.connect(new java.net.InetSocketAddress(SERVER_HOST, serverPort), CONNECTION_TIMEOUT);
-                ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-                out.writeObject(request);
-                out.flush();
-                ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-                return (NetworkMessage) in.readObject();
-            }
-        } catch (Exception e) {
-            return createErrorResponse("请求server " + serverId + " 失败: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * 发送RP请求的专用方法
-     */
-    private NetworkMessage sendRPRequest(String messageType, Map<String, Object> data) {
-        String requestId = generateRequestId();
-        NetworkMessage request = new NetworkMessage(messageType, requestId, data);
-        
-        try (Socket socket = new Socket()) {
-            socket.connect(new java.net.InetSocketAddress(SERVER_HOST, RP_SERVER_PORT), CONNECTION_TIMEOUT);
-            
-            // 发送请求
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            out.writeObject(request);
-            out.flush();
-            
-            // 接收响应
-            ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-            NetworkMessage response = (NetworkMessage) in.readObject();
-            
-            System.out.println("✅ RP请求发送成功: " + messageType + " (RP端口: " + RP_SERVER_PORT + ")");
-            return response;
-            
-        } catch (Exception e) {
-            System.err.println("❌ RP通信失败 (端口 " + RP_SERVER_PORT + "): " + e.getMessage());
-            return createErrorResponse("RP通信失败: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * 序列化密钥份额列表
-     */
-    private List<Map<String, String>> serializeKeyShares(List<Pair<Integer, BigInteger>> keyShares) {
-        List<Map<String, String>> result = new ArrayList<>();
-        for (Pair<Integer, BigInteger> share : keyShares) {
-            Map<String, String> shareData = new HashMap<>();
-            shareData.put("serverId", String.valueOf(share.getFirst()));
-            shareData.put("keyValue", share.getSecond().toString(16));
-            result.add(shareData);
-        }
-        return result;
-    }
-    
-    /**
-     * 序列化服务器存储记录
-     */
-    private List<Map<String, String>> serializeServerStoreRecord(List<Pair<byte[], byte[]>> records) {
-        List<Map<String, String>> result = new ArrayList<>();
-        for (Pair<byte[], byte[]> record : records) {
-            Map<String, String> recordData = new HashMap<>();
-            recordData.put("lookupKey", CryptoUtil.bytesToHex(record.getFirst()));
-            recordData.put("symmetricKey", CryptoUtil.bytesToHex(record.getSecond()));
-            result.add(recordData);
-        }
-        return result;
-    }
-    
     /**
      * 反序列化令牌份额响应
      */
@@ -290,16 +176,15 @@ public class ClientNetworkManager {
         
         return result;
     }
-    
+
     /**
-     * 反序列化RP注册响应
+     * 解析 USERID_OPRF_RESPONSE 的份额列表（单返回）
      */
-    @SuppressWarnings("unchecked")
-    public Pair<String, String> deserializeRPRegisterResponse(NetworkMessage response) {
-        if (response.getData() != null) {
-            String identityHex = (String) response.getData().get("identity");
-            String signatureHex = (String) response.getData().get("signature");
-            return Pair.of(identityHex, signatureHex);
+    public Pair<Integer, String> deserializeUserIdOPRFShare(NetworkMessage response) {
+        if (response.getData() != null && Boolean.TRUE.equals(response.getData().get("success"))) {
+            int serverId = Integer.parseInt((String) response.getData().get("serverId"));
+            String ecPointHex = (String) response.getData().get("ecPoint");
+            return Pair.of(serverId, ecPointHex);
         }
         return null;
     }

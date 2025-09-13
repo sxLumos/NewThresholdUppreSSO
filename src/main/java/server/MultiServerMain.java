@@ -31,7 +31,7 @@ public class MultiServerMain {
             // 启动多个服务器，每个使用不同端口
             for (int i = 0; i < SystemConfig.NUM_SERVERS; i++) {
                 final int serverId = i;
-                ServerNetworkManager serverManager = new ServerNetworkManager(idpGroup, serverId);
+                ServerNetworkManager serverManager = new ServerNetworkManager(idpGroup.getIdp(i + 1), serverId);
                 servers.add(serverManager);
                 
                 // 在单独的线程中启动每个服务器

@@ -2,30 +2,43 @@ package server.idp;
 
 import org.bouncycastle.math.ec.ECPoint;
 import server.interfaces.TokenGenerator;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import server.idp.ThresholdRSAJWTTokenGenerator;
 import storage.RedisStorage;
 import utils.Pair;
+import utils.SymmetricEncryptor;
 
 import java.math.BigInteger;
 import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 public class IdentityProvider {
-    private final int sid;
+    private final int sid; // from 1 to numOfServer
+    private final PublicKey publicKey;
     private final TokenGenerator tokenGenerator;
     private BigInteger TOPRFKeyEnc;
     private BigInteger TOPRFKeyUserID;
     private final RedisStorage redisStorage;
 
-    public IdentityProvider(int sid, TokenGenerator tokenGenerator) {
+    public IdentityProvider(int sid, PublicKey publicKey,TokenGenerator tokenGenerator) {
         this.sid = sid;
+        this.publicKey = publicKey;
         this.tokenGenerator = tokenGenerator;
         this.redisStorage = RedisStorage.getInstance();
     }
 
     public int getSid() {
         return sid;
+    }
+    public PublicKey getPublicKey() {
+        return publicKey;
     }
     public void setTOPRFKeyEnc(BigInteger encKeyShare) {
         this.TOPRFKeyEnc = encKeyShare;
@@ -106,6 +119,36 @@ public class IdentityProvider {
             return null;
         }
     }
+    public void performUserRegister(BigInteger keyShareEnc, BigInteger keyShareUserID, Pair<byte[], byte[]> serverStoreRecord) {
+        this.setTOPRFKeyEnc(keyShareEnc);
+        this.setTOPRFKeyUserID(keyShareUserID);
+        this.storeUserInfo(serverStoreRecord);
+    }
+
+    /**
+     * 仅由指定sid的服务器计算其本地token share
+     */
+    public Pair<Integer, Pair<String, ECPoint>> generateTokenShareFor(byte[] UserID, ECPoint blindInput, long startTimeSec, Map<String, Object> info) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(UserID);
+            digest.update(BigInteger.valueOf(this.getSid()).toByteArray());
+            byte[] symmetricKey = this.retrieveSymmetricKey(digest.digest());
+            if (symmetricKey == null) {
+                System.err.printf("❌ ERROR: Could not find symmetric key for IdP %d.%n", this.getSid());
+                return null;
+            }
+            String plaintextTokenShare = this.generateTokenShare(startTimeSec, info);
+            byte[] plaintextBytes = plaintextTokenShare.getBytes(StandardCharsets.UTF_8);
+            byte[] encryptedTokenBytes = SymmetricEncryptor.encrypt(plaintextBytes, symmetricKey);
+            String encryptedTokenBase64 = Base64.getEncoder().encodeToString(encryptedTokenBytes);
+            return Pair.of(this.getSid(), Pair.of(encryptedTokenBase64, this.evaluateKeyEnc(blindInput)));
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
 
     /**
      * 生成对任意内容的阈值RSA签名份额 s_i = H(m)^{d_i} mod n
