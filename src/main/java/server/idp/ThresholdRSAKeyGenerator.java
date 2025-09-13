@@ -1,16 +1,23 @@
 package server.idp;
 
 import server.interfaces.KeyGenerator;
-import storage.RedisStorage;
 import utils.Pair;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.RSAPrivateKeySpec;
 import java.security.spec.RSAPublicKeySpec;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 
 public class ThresholdRSAKeyGenerator implements KeyGenerator {
     private BigInteger n; // RSA Modulus
@@ -22,7 +29,7 @@ public class ThresholdRSAKeyGenerator implements KeyGenerator {
     private static final int KEY_SIZE = 2048;
     public static final String PRIVATE_KEY_SHARE = "privateKeyShare";
     public static final String PUBLIC_KEY = "n";
-    private final RedisStorage redisStorage;
+    private static final String KEY_FILENAME = "threshold_keys.properties";
 
     // 1≤threshold≤numOfServer and threshold>(numOfServer/2)
     public ThresholdRSAKeyGenerator(int numOfServer, int threshold, boolean createNewKey) {
@@ -30,18 +37,17 @@ public class ThresholdRSAKeyGenerator implements KeyGenerator {
         if (threshold >= 1 && threshold <= numOfServer) {
             this.numOfServer = numOfServer;
             this.threshold = threshold;
-            this.redisStorage = RedisStorage.getInstance();
-
-            // 只从Redis加载，如果Redis中没有则生成新密钥
-            if (!loadKeyFromRedis()) {
-                if (createNewKey) {
-                    System.out.println("▶️ Generating new threshold keys...");
-                    this.generateKey();
-                } else {
-                    System.out.println("▶️ No existing keys found in Redis, generating new keys...");
-                    this.generateKey();
-                }
-            }
+            System.out.println("▶️ Generating new threshold keys...");
+            this.generateKey();
+//            File keyFile = new File(KEY_FILENAME);
+//            // If createNew is true OR if we want to load but the file doesn't exist, generate new keys.
+//            if (createNewKey || !keyFile.exists()) {
+//                System.out.println("▶️ Generating new threshold keys...");
+//                this.generateKey();
+//            } else {
+//                System.out.println("▶️ Loading existing threshold keys from " + KEY_FILENAME + "...");
+//                this.loadKeyFromFile();
+//            }
         } else {
             throw new IllegalArgumentException("Threshold and numOfServer do not meet requirement.");
         }
@@ -80,66 +86,63 @@ public class ThresholdRSAKeyGenerator implements KeyGenerator {
             }
             this.privateKeyShares.add(Pair.of(i, share));
         }
-        // After generating, save the keys to Redis.
-        saveKeyToRedis();
+        // After generating, save the keys to a file.
+//        saveKeyToFile();
     }
 
-    
-    /**
-     * 保存密钥到Redis
-     */
-    public void saveKeyToRedis() {
-        Map<String, String> keyData = new HashMap<>();
-        keyData.put("n", this.n.toString(16));
-        keyData.put("e", this.e.toString(16));
-        keyData.put("d", this.d.toString(16));
-        keyData.put("numOfServer", String.valueOf(this.numOfServer));
-        keyData.put("threshold", String.valueOf(this.threshold));
-        
-        // 保存私钥份额
+    public void saveKeyToFile() {
+        Properties props = getProperties();
+
+        try (FileOutputStream fos = new FileOutputStream(KEY_FILENAME)) {
+            props.store(fos, "Threshold RSA Key Data. DO NOT EDIT MANUALLY.");
+            System.out.println("✅ Keys successfully saved to " + KEY_FILENAME);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to save keys to file.", e);
+        }
+    }
+
+    private Properties getProperties() {
+        Properties props = new Properties();
+        props.setProperty("n", this.n.toString(16));
+        props.setProperty("e", this.e.toString(16));
+        props.setProperty("d", this.d.toString(16));
+        props.setProperty("numOfServer", String.valueOf(this.numOfServer));
+        props.setProperty("threshold", String.valueOf(this.threshold));
+
+        // The property key will be "share.{ID}", e.g., "share.1", "share.2".
         for (Pair<Integer, BigInteger> sharePair : this.privateKeyShares) {
-            keyData.put("share." + sharePair.getFirst(), sharePair.getSecond().toString(16));
+            props.setProperty("share." + sharePair.getFirst(), sharePair.getSecond().toString(16));
         }
-        
-        redisStorage.storeThresholdKeys(keyData);
-        System.out.println("✅ 阈值RSA密钥已保存到Redis");
-    }
-    
-    /**
-     * 从Redis加载密钥
-     */
-    public boolean loadKeyFromRedis() {
-        try {
-            Map<String, String> keyData = redisStorage.retrieveThresholdKeys();
-            if (keyData == null || keyData.isEmpty()) {
-                System.out.println("▶️ Redis中没有找到阈值密钥，将使用文件或生成新密钥");
-                return false;
-            }
-            
-            this.n = new BigInteger(keyData.get("n"), 16);
-            this.e = new BigInteger(keyData.get("e"), 16);
-            this.d = new BigInteger(keyData.get("d"), 16);
-            this.numOfServer = Integer.parseInt(keyData.get("numOfServer"));
-            this.threshold = Integer.parseInt(keyData.get("threshold"));
-            
-            this.privateKeyShares = new ArrayList<>();
-            for (int i = 1; i <= this.numOfServer; i++) {
-                String hexShare = keyData.get("share." + i);
-                if (hexShare == null) {
-                    System.out.println("▶️ Redis中密钥数据不完整，将使用文件或生成新密钥");
-                    return false;
-                }
-                this.privateKeyShares.add(Pair.of(i, new BigInteger(hexShare, 16)));
-            }
-            
-            System.out.println("✅ 阈值RSA密钥已从Redis成功加载");
-            return true;
-        } catch (Exception e) {
-            System.err.println("❌ 从Redis加载密钥失败: " + e.getMessage());
-            return false;
-        }
+
+        return props;
     }
 
+    public void loadKeyFromFile() {
+        Properties props = new Properties();
+        try (FileInputStream fis = new FileInputStream(KEY_FILENAME)) {
+            props.load(fis);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load keys from file: " + KEY_FILENAME, e);
+        }
+
+        this.n = new BigInteger(props.getProperty("n"), 16);
+        this.e = new BigInteger(props.getProperty("e"), 16);
+        this.d = new BigInteger(props.getProperty("d"), 16);
+        // We use the values from the file to ensure consistency
+        this.numOfServer = Integer.parseInt(props.getProperty("numOfServer"));
+        this.threshold = Integer.parseInt(props.getProperty("threshold"));
+
+        this.privateKeyShares = new ArrayList<>();
+        for (int i = 1; i <= this.numOfServer; i++) {
+            String hexShare = props.getProperty("share." + i);
+            if (hexShare == null) {
+                throw new RuntimeException("Key file is corrupt or missing share for server ID " + i);
+            }
+            // FIX 5: Reconstruct the Pair object from the loaded ID and value.
+            this.privateKeyShares.add(Pair.of(i, new BigInteger(hexShare, 16)));
+        }
+        System.out.println("✅ Keys successfully loaded.");
+    }
 
     @Override
     public Map<String, Object> getKeySet() {

@@ -4,7 +4,6 @@ import config.SystemConfig;
 import network.ClientNetworkManager;
 import network.NetworkMessage;
 import org.bouncycastle.math.ec.ECPoint;
-import storage.RedisStorage;
 import utils.CryptoUtil;
 import utils.Lagrange;
 import utils.Pair;
@@ -96,7 +95,6 @@ public class NetworkClient {
             e.printStackTrace();
         } finally {
             executor.shutdown();
-            RedisStorage.getInstance().close();
         }
     }
 

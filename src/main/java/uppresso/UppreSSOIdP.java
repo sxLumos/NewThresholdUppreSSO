@@ -45,6 +45,7 @@ public class UppreSSOIdP {
     private ServerSocket serverSocketRef;
 
     // Message types (scoped to uppresso flow)
+    private static final String UP_AUTHENTICATE_USER = "UP_AUTHENTICATE_USER";
     private static final String UP_REGISTER_USER = "UP_REGISTER_USER";
     private static final String UP_REQUEST_TOKEN = "UP_REQUEST_TOKEN";
     private static final String UP_REGISTER_RP = "UP_REGISTER_RP";
@@ -122,7 +123,18 @@ public class UppreSSOIdP {
     private NetworkMessage processRequest(NetworkMessage request) {
         try {
             String type = request.getMessageType();
-            if (UP_REGISTER_USER.equals(type)) {
+            if(UP_AUTHENTICATE_USER.equals(type)) {
+                String username = (String) request.getData().get("username");
+                String hashedPassword = (String) request.getData().get("hashedPassword");
+                Map<String, Object> resp = new HashMap<>();
+                if(authenticateUser(username, hashedPassword)) {
+                    resp.put("success", true);
+                } else {
+                    resp.put("success", false);
+                    resp.put("error", "Identity Authentication Failed");
+                }
+                return new NetworkMessage(type + "_RESP", request.getRequestId(), resp);
+            } else if (UP_REGISTER_USER.equals(type)) {
                 String username = (String) request.getData().get("username");
                 String hashedPassword = (String) request.getData().get("hashedPassword");
                 registerUserAndGenerateID(username, hashedPassword);
@@ -225,7 +237,6 @@ public class UppreSSOIdP {
             System.err.println("❌ IdP: Token request failed. User '" + username + "' not found.");
             return null;
         }
-
         // 2. Get the user's secret ID_U scalar
         BigInteger iduScalar = record.iduScalar();
 

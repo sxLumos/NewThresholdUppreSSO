@@ -40,7 +40,7 @@ public class RPServerNetworkManager {
         this.relyingParty = new RelyingParty();
         this.threadPool = Executors.newFixedThreadPool(MAX_THREADS);
         this.running = false;
-
+        this.resetCounters();
         Runnable rpRegisterTask = this::register;
         System.out.printf("RP注册耗时: %.0f ms\n", SimpleBenchmark.getAverageTime(benchmarkRuns, rpRegisterTask));
         // 2. 在基准测试结束后，获取、计算并打印平均通信代价
@@ -161,6 +161,9 @@ public class RPServerNetworkManager {
 
                 // 验证 threshold RSA: sig^e == H(m)^{t!}
                 java.math.BigInteger e = ((java.security.interfaces.RSAPublicKey) publicKey).getPublicExponent();
+//                boolean res = ThresholdRSAJWTVerifier.verifyThresholdSignature(messageHash, finalSig, n, e, SystemConfig.THRESHOLD);
+//                System.err.println("RP注册签名验证结果（调方法）" + res);
+
                 java.math.BigInteger left = finalSig.modPow(e, n);
                 // expected = H(m)^{t!} mod n
                 java.math.BigInteger delta = java.math.BigInteger.ONE;

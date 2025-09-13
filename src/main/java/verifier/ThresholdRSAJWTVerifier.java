@@ -136,7 +136,7 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
         return result;
     }
 
-    private static boolean verifyThresholdSignature(BigInteger messageHash, BigInteger signature, BigInteger n, BigInteger e, int t) {
+    public static boolean verifyThresholdSignature(BigInteger messageHash, BigInteger signature, BigInteger n, BigInteger e, int t) {
         BigInteger delta = factorial(t);
         BigInteger verificationValue = signature.modPow(e, n);
         BigInteger expectedValue = messageHash.modPow(delta, n);

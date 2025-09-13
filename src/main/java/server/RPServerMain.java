@@ -2,7 +2,6 @@ package server;
 
 import config.SystemConfig;
 import network.RPServerNetworkManager;
-import storage.RedisStorage;
 
 /**
  * RP服务器主启动类
@@ -30,8 +29,6 @@ public class RPServerMain {
             System.err.println("❌ RP服务器启动失败: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
-        } finally {
-            RedisStorage.getInstance().close();
         }
     }
 }

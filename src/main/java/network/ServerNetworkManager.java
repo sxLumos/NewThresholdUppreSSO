@@ -35,7 +35,31 @@ public class ServerNetworkManager {
         this.threadPool = Executors.newFixedThreadPool(MAX_THREADS);
         this.running = false;
     }
-    
+
+    /**
+     * 处理不同类型的请求
+     */
+    private NetworkMessage processRequest(NetworkMessage request) {
+        try {
+            switch (request.getMessageType()) {
+                case MessageTypes.USER_REGISTER:
+                    return handleUserRegister(request);
+                case MessageTypes.TOKEN_REQUEST:
+                    return handleTokenRequestLocalShare(request);
+                case MessageTypes.RP_REGISTER:
+                    return handleRPRegister(request);
+                case MessageTypes.USERID_OPRF_REQUEST:
+                    return handleUserIdOPRFRequest(request);
+                default:
+                    return createErrorResponse(request.getRequestId(), "未知的请求类型: " + request.getMessageType());
+            }
+        } catch (Exception e) {
+            System.err.println("❌ 处理请求时发生错误: " + e.getMessage());
+            e.printStackTrace();
+            return createErrorResponse(request.getRequestId(), "服务器内部错误: " + e.getMessage());
+        }
+    }
+
     /**
      * 启动服务器
      */
@@ -109,30 +133,6 @@ public class ServerNetworkManager {
                     System.err.println("❌ 关闭客户端连接失败: " + e.getMessage());
                 }
             }
-        }
-    }
-    
-    /**
-     * 处理不同类型的请求
-     */
-    private NetworkMessage processRequest(NetworkMessage request) {
-        try {
-            switch (request.getMessageType()) {
-                case MessageTypes.USER_REGISTER:
-                    return handleUserRegister(request);
-                case MessageTypes.TOKEN_REQUEST:
-                    return handleTokenRequestLocalShare(request);
-                case MessageTypes.RP_REGISTER:
-                    return handleRPRegister(request);
-                case MessageTypes.USERID_OPRF_REQUEST:
-                    return handleUserIdOPRFRequest(request);
-                default:
-                    return createErrorResponse(request.getRequestId(), "未知的请求类型: " + request.getMessageType());
-            }
-        } catch (Exception e) {
-            System.err.println("❌ 处理请求时发生错误: " + e.getMessage());
-            e.printStackTrace();
-            return createErrorResponse(request.getRequestId(), "服务器内部错误: " + e.getMessage());
         }
     }
     
@@ -227,7 +227,7 @@ public class ServerNetworkManager {
             byte[] contentBytes = contentHex.getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
             // 本地服务器生成签名份额
-            int sid = this.serverId + 1;
+            int sid = this.idp.getSid();
             BigInteger sigShare = idp.generateSignatureShare(contentBytes);
 
             Map<String, Object> responseData = new HashMap<>();
