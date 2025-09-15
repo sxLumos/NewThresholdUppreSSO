@@ -9,6 +9,7 @@ import utils.SimpleBenchmark;
 import verifier.ThresholdRSAJWTVerifier;
 
 import java.io.*;
+import java.math.BigInteger;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.*;
@@ -157,21 +158,11 @@ public class RPServerNetworkManager {
                 java.math.BigInteger messageHash = new java.math.BigInteger(1, digest.digest(contentBytes));
                 java.math.BigInteger n = ((java.security.interfaces.RSAPublicKey) publicKey).getModulus();
 
-                java.math.BigInteger finalSig = verifier.ThresholdRSAJWTVerifier.combineSignatures(partials, n, SystemConfig.THRESHOLD);
+                java.math.BigInteger finalSig = verifier.ThresholdRSAJWTVerifier.combineSignatures(partials, n);
 
-                // 验证 threshold RSA: sig^e == H(m)^{t!}
                 java.math.BigInteger e = ((java.security.interfaces.RSAPublicKey) publicKey).getPublicExponent();
-//                boolean res = ThresholdRSAJWTVerifier.verifyThresholdSignature(messageHash, finalSig, n, e, SystemConfig.THRESHOLD);
-//                System.err.println("RP注册签名验证结果（调方法）" + res);
-
-                java.math.BigInteger left = finalSig.modPow(e, n);
-                // expected = H(m)^{t!} mod n
-                java.math.BigInteger delta = java.math.BigInteger.ONE;
-                for (int i = 2; i <= SystemConfig.THRESHOLD; i++) delta = delta.multiply(java.math.BigInteger.valueOf(i));
-                java.math.BigInteger right = messageHash.modPow(delta, n);
-                boolean ok = left.equals(right);
-
-                if (!ok) {
+                boolean res = ThresholdRSAJWTVerifier.verifyThresholdSignature(messageHash, finalSig, n, e);
+                if (!res) {
                     System.err.println("❌ RP注册签名验证失败");
                 } else {
                     // 记录 rpHost 并保存证书

@@ -20,8 +20,10 @@ public class ClientNetworkManager {
     private static final int RP_SERVER_PORT = SystemConfig.RP_SERVER_PORT; // RP服务器端口
     private static final int CONNECTION_TIMEOUT = SystemConfig.CONNECTION_TIMEOUT_MS; // 5秒超时
     // --- START: 添加用于测量通信代价的成员 ---
-    private final AtomicLong totalBytesSent = new AtomicLong(0);
-    private final AtomicLong totalBytesReceived = new AtomicLong(0);
+    public final AtomicLong registerBytesSent = new AtomicLong(0);
+    public final AtomicLong loginBytesSent = new AtomicLong(0);
+    public final AtomicLong registerBytesReceived = new AtomicLong(0);
+    public final AtomicLong loginBytesReceived = new AtomicLong(0);
     // --- END: 添加成员 ---
     
     private final Random random;
@@ -33,22 +35,10 @@ public class ClientNetworkManager {
      * 重置通信代价计数器。
      */
     public void resetCounters() {
-        totalBytesSent.set(0);
-        totalBytesReceived.set(0);
-    }
-
-    /**
-     * 获取发送的总字节数。
-     */
-    public long getTotalBytesSent() {
-        return totalBytesSent.get();
-    }
-
-    /**
-     * 获取接收的总字节数。
-     */
-    public long getTotalBytesReceived() {
-        return totalBytesReceived.get();
+        registerBytesSent.set(0);
+        loginBytesSent.set(0);
+        registerBytesReceived.set(0);
+        loginBytesReceived.set(0);
     }
 
     /**
@@ -60,10 +50,10 @@ public class ClientNetworkManager {
      * @param request 要发送的NetworkMessage对象
      * @return 从服务器接收到的NetworkMessage对象，或在失败时返回一个错误响应
      */
-    private NetworkMessage executeRequest(String host, int port, NetworkMessage request) {
+    private NetworkMessage executeRequest(String host, int port, NetworkMessage request, String type) {
+
         // 1. 测量请求(Request)对象的大小
         long requestSize = getObjectSize(request);
-        totalBytesSent.addAndGet(requestSize);
 
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(host, port), CONNECTION_TIMEOUT);
@@ -79,7 +69,16 @@ public class ClientNetworkManager {
 
             // 2. 测量响应(Response)对象的大小
             long responseSize = getObjectSize(response);
-            totalBytesReceived.addAndGet(responseSize);
+
+            if(type.equals("login")) {
+                loginBytesSent.addAndGet(requestSize);
+                loginBytesReceived.addAndGet(responseSize);
+            } else if(type.equals("register")) {
+                registerBytesSent.addAndGet(requestSize);
+                registerBytesReceived.addAndGet(responseSize);
+            } else {
+                throw new RuntimeException("Wrong type");
+            }
 
             return response;
 
@@ -122,19 +121,19 @@ public class ClientNetworkManager {
         NetworkMessage request = new NetworkMessage(MessageTypes.USER_REGISTER, generateRequestId(), data);
         int serverPort = BASE_PORT + (serverId - 1);
 
-        return executeRequest(SERVER_HOST, serverPort, request);
+        return executeRequest(SERVER_HOST, serverPort, request, "register");
     }
 
     public NetworkMessage sendTokenVerifyRequest(String jwtToken) {
         Map<String, Object> data = new HashMap<>();
         data.put("jwtToken", jwtToken);
         NetworkMessage request = new NetworkMessage(MessageTypes.TOKEN_VERIFY_REQUEST, generateRequestId(), data);
-        return executeRequest(SERVER_HOST, RP_SERVER_PORT, request);
+        return executeRequest(SERVER_HOST, RP_SERVER_PORT, request, "login");
     }
 
     public NetworkMessage sendRPCertRequest() {
         NetworkMessage request = new NetworkMessage(MessageTypes.RP_CERT_REQUEST, generateRequestId(), new HashMap<>());
-        return executeRequest(SERVER_HOST, RP_SERVER_PORT, request);
+        return executeRequest(SERVER_HOST, RP_SERVER_PORT, request, "login");
     }
 
     public NetworkMessage sendUserIdOPRFShareRequestToServerId(int serverId, String blindedPointHex) {
@@ -142,7 +141,7 @@ public class ClientNetworkManager {
         data.put("blindedPoint", blindedPointHex);
         NetworkMessage request = new NetworkMessage(MessageTypes.USERID_OPRF_REQUEST, generateRequestId(), data);
         int serverPort = BASE_PORT + (serverId - 1);
-        return executeRequest(SERVER_HOST, serverPort, request);
+        return executeRequest(SERVER_HOST, serverPort, request, "login");
     }
 
     public NetworkMessage sendTokenShareRequestToServerId(int serverId, byte[] userID, String blindedPointHex, long startTimeSec, Map<String, Object> info) {
@@ -153,7 +152,7 @@ public class ClientNetworkManager {
         data.put("info", info);
         NetworkMessage request = new NetworkMessage(MessageTypes.TOKEN_REQUEST, generateRequestId(), data);
         int serverPort = BASE_PORT + (serverId - 1);
-        return executeRequest(SERVER_HOST, serverPort, request);
+        return executeRequest(SERVER_HOST, serverPort, request, "login");
     }
 
     /**

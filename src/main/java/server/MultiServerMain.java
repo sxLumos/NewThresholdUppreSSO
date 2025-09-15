@@ -3,12 +3,13 @@ package server;
 import config.SystemConfig;
 import network.ServerNetworkManager;
 import server.idp.IdentityProviderGroup;
-import storage.RedisStorage;
+//import storage.RedisStorage;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
 
 /**
  * 多服务器主启动类，每个服务器使用不同端口
@@ -18,7 +19,7 @@ public class MultiServerMain {
     public static void main(String[] args) {
         System.out.println("🚀 启动多服务器阈值RSA JWT认证系统...");
         System.out.println("服务器数量: " + SystemConfig.NUM_SERVERS + ", 阈值: " + SystemConfig.THRESHOLD);
-        
+
         try {
             // 初始化身份提供商组
             IdentityProviderGroup idpGroup = new IdentityProviderGroup();
@@ -68,8 +69,6 @@ public class MultiServerMain {
             System.err.println("❌ 多服务器启动失败: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
-        } finally {
-            RedisStorage.getInstance().close();
         }
     }
 }

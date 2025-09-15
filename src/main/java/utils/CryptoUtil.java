@@ -57,48 +57,6 @@ public class CryptoUtil {
      */
     public static ECPoint hashToCurve(byte[] input) {
         return Rfc9380P256Utils.hashToCurve(input);
-//        try {
-//            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-//            // 使用一个 domain separation tag 来确保哈希用途的唯一性
-//            byte[] domainSeparator = "HashToCurve_".getBytes();
-//
-//            // 使用 "Hash-and-Try" 方法
-//            for (int counter = 0; counter < 256; counter++) {
-//                // 1. 哈希(输入 || 计数器) 来获得候选的 x 坐标
-//                ByteBuffer buffer = ByteBuffer.allocate(domainSeparator.length + input.length + 1);
-//                buffer.put(domainSeparator);
-//                buffer.put(input);
-//                buffer.put((byte) counter);
-//                byte[] hash = digest.digest(buffer.array());
-//
-//                BigInteger xCand = new BigInteger(1, hash);
-//
-//                // 确保 x 在有限域 F_p 内
-//                xCand = xCand.mod(FIELD_PRIME);
-//
-//                // 2. 使用曲线方程 y^2 = x^3 + ax + b (mod p) 计算 y^2
-//                BigInteger ySquared = xCand.pow(3).add(CURVE_A.multiply(xCand)).add(CURVE_B).mod(FIELD_PRIME);
-//
-//                // 3. 检查 y^2 是否是模 p 的二次剩余，即计算其模平方根
-//                // BouncyCastle 的 ECFieldElement.sqrt() 是完成此任务的完美工具
-//                ECFieldElement ySquaredField = EC_SPEC.getCurve().fromBigInteger(ySquared);
-//                ECFieldElement yField = ySquaredField.sqrt();
-//
-//                if (yField != null) {
-//                    // 4. 如果找到了平方根，我们成功了
-//                    BigInteger y = yField.toBigInteger();
-//                    // 5. 创建并返回点
-//                    return EC_SPEC.getCurve().createPoint(xCand, y).normalize();
-//                }
-//                // 6. 如果没有找到，循环将继续，尝试下一个计数器值
-//            }
-//
-//            // 如果尝试了256次仍然失败（对于SHA-256几乎不可能），则抛出异常
-//            throw new RuntimeException("Failed to hash to curve point after 256 attempts.");
-//
-//        } catch (NoSuchAlgorithmException e) {
-//            throw new RuntimeException("SHA-256 algorithm not found", e);
-//        }
     }
 
 
@@ -132,7 +90,7 @@ public class CryptoUtil {
 
     public static byte[] calculateExpectedOutput(byte[] x, BigInteger masterKey) {
         // 重要：这里应该使用安全的 hashToCurve
-        ECPoint h1x = CryptoUtil.hashToPoint(x);
+        ECPoint h1x = CryptoUtil.hashToCurve(x);
         ECPoint prfResultPoint = h1x.multiply(masterKey).normalize();
         return CryptoUtil.hashPointToBytes(prfResultPoint);
     }
@@ -206,6 +164,20 @@ public class CryptoUtil {
         System.out.println("确定性验证:");
         System.out.println("  第二次哈希: " + bytesToHex(securePoint2.getEncoded(false)));
         System.out.println("  两次结果是否相等: " + securePoint.equals(securePoint2));
+
+        long a = System.currentTimeMillis();
+        for(int i = 0;i < 100;i ++) {
+            ECPoint t1 = hashToPoint(input);
+        }
+        long b = System.currentTimeMillis();
+        System.out.printf("hashToPoint: %.2f ms", (b - a) / (100.0));
+
+        a = System.currentTimeMillis();
+        for(int i = 0;i < 100;i ++) {
+            ECPoint t1 = hashToCurve(input);
+        }
+        b = System.currentTimeMillis();
+        System.out.printf("hashToCurve: %.2f ms", (b - a) / (100.0));
 
         System.out.println(isPointOnCurve(securePoint));
     }

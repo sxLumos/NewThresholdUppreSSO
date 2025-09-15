@@ -39,6 +39,9 @@ public class NetworkClient {
 //    private final RedisStorage redisStorage;
     private static final ExecutorService executor;
     private PublicKey publicKey;
+    List<Long> q = new ArrayList<>();
+    List<Long> w = new ArrayList<>();
+    List<Long> e = new ArrayList<>();
     
     static {
         try {
@@ -74,22 +77,78 @@ public class NetworkClient {
             System.out.printf("User请求Token耗时: %.0f ms\n", b);
             System.out.printf("验证Token耗时: %.0f ms\n", c);
             // 2. 在所有操作结束后，获取并打印总的通信代价
-            long totalSent = client.networkManager.getTotalBytesSent();
-            long totalReceived = client.networkManager.getTotalBytesReceived();
-            long totalComm = totalSent + totalReceived;
+            long totalRegisterSent = client.networkManager.registerBytesSent.get();
+            long totalRegisterReceived = client.networkManager.registerBytesReceived.get();
+            long totalRegisterComm = totalRegisterSent + totalRegisterReceived;
 
             System.out.printf(
                     "\n============================================\n" +
-                            "      总通信代价统计 (所有操作合计)\n" +
+                            "      用户注册阶段总通信代价统计 (所有操作合计)\n" +
                             "--------------------------------------------\n" +
                             "  - 总发送量: %.2f KB\n" +
                             "  - 总接收量: %.2f KB\n" +
                             "  - 总通信量: %.2f KB\n" +
                             "============================================\n",
-                    (double) totalSent / (1024.0 * benchmarkRuns),
-                    (double) totalReceived / (1024.0 * benchmarkRuns),
-                    (double) totalComm / (1024.0 * benchmarkRuns)
+                    (double) totalRegisterSent / (1024.0 * benchmarkRuns),
+                    (double) totalRegisterReceived / (1024.0 * benchmarkRuns),
+                    (double) totalRegisterComm / (1024.0 * benchmarkRuns)
             );
+
+            long totalLoginSent = client.networkManager.loginBytesSent.get();
+            long totalLoginReceived = client.networkManager.loginBytesReceived.get();
+            long totalLoginComm = totalLoginSent + totalLoginReceived;
+
+            System.out.printf(
+                    "\n============================================\n" +
+                            "      用户登录阶段总通信代价统计 (所有操作合计)\n" +
+                            "--------------------------------------------\n" +
+                            "  - 总发送量: %.2f KB\n" +
+                            "  - 总接收量: %.2f KB\n" +
+                            "  - 总通信量: %.2f KB\n" +
+                            "============================================\n",
+                    (double) totalLoginSent / (1024.0 * benchmarkRuns),
+                    (double) totalLoginReceived / (1024.0 * benchmarkRuns),
+                    (double) totalLoginComm / (1024.0 * benchmarkRuns)
+            );
+            // 2. 排序并移除首尾两个极端值
+            Collections.sort(client.q);
+            client.q.remove(0); // 移除最低
+            client.q.remove(client.q.size() - 1); // 移除最高
+
+            // 3. 计算剩余部分的平均值
+            double averageMs = client.q.stream()
+                    .mapToLong(Long::longValue)
+                    .average()
+                    .orElse(0.0);
+            System.out.printf("Token Request: %.2f\n", averageMs);
+
+
+            // 2. 排序并移除首尾两个极端值
+            Collections.sort(client.w);
+            client.w.remove(0); // 移除最低
+            client.w.remove(client.w.size() - 1); // 移除最高
+
+            // 3. 计算剩余部分的平均值
+            averageMs = client.w.stream()
+                    .mapToLong(Long::longValue)
+                    .average()
+                    .orElse(0.0);
+            System.out.printf("Token Construct: %.2f\n", averageMs);
+
+
+            // 2. 排序并移除首尾两个极端值
+            Collections.sort(client.e);
+            client.e.remove(0); // 移除最低
+            client.e.remove(client.e.size() - 1); // 移除最高
+
+            // 3. 计算剩余部分的平均值
+            averageMs = client.e.stream()
+                    .mapToLong(Long::longValue)
+                    .average()
+                    .orElse(0.0);
+            System.out.printf("Token Verify: %.2f\n", averageMs);
+
+
             executor.shutdown();
         } catch (Exception e) {
             e.printStackTrace();
@@ -107,7 +166,7 @@ public class NetworkClient {
     
     public void register(int n, int t) {
         try {
-            byte[] input = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
+            byte[] input = (username + password).getBytes(StandardCharsets.UTF_8);
             Pair<BigInteger, List<Pair<Integer, BigInteger>>> TOPRFShareEnc = generateTOPRFKeyShare(n, t);
             BigInteger masterPrivateKeyEnc = TOPRFShareEnc.getFirst();
             List<Pair<Integer, BigInteger>> privateKeyShareEnc = TOPRFShareEnc.getSecond();
@@ -145,7 +204,6 @@ public class NetworkClient {
                                 // .handle() 会处理正常结果(response)或异常(ex)
                                 if (ex != null || !networkManager.isSuccessResponse(response)) {
                                     // 如果有异常，或者响应内容表示失败
-                                    ex.printStackTrace();
                                     String errorMessage = (ex != null)
                                             ? ex.getCause().getMessage()
                                             : networkManager.getErrorMessage(response);
@@ -181,8 +239,9 @@ public class NetworkClient {
         try {
 //            long a = System.currentTimeMillis();
             // 通过TOPRF与t个IdP在线计算UserID（不再从Redis读取）
-            byte[] userInputForUserId = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
-            ECPoint h1_userId = CryptoUtil.hashToPoint(userInputForUserId);
+//            byte[] userInputForUserId = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
+            byte[] userInputForUserId = (username + password).getBytes(StandardCharsets.UTF_8);
+            ECPoint h1_userId = CryptoUtil.hashToCurve(userInputForUserId);
             BigInteger r_userId = CryptoUtil.randomScalar();
             ECPoint a_userId = h1_userId.multiply(r_userId).normalize();
             String aUserIdHex = CryptoUtil.bytesToHex(a_userId.getEncoded(true));
@@ -194,17 +253,38 @@ public class NetworkClient {
                 chosenForUserId.add(sid);
             }
             int[] serverIndicesForUserId = chosenForUserId.stream().mapToInt(Integer::intValue).toArray();
-            ECPoint combinedB_userId = CryptoUtil.EC_SPEC.getCurve().getInfinity();
-            for (int sid : chosenForUserId) {
-                NetworkMessage resp = networkManager.sendUserIdOPRFShareRequestToServerId(sid, aUserIdHex);
-                Pair<Integer, String> pair = networkManager.deserializeUserIdOPRFShare(resp);
-                if (pair != null) {
-                    int i = pair.getFirst();
-                    ECPoint bi = CryptoUtil.decodePointFromHex(pair.getSecond());
-                    BigInteger lambda_i = Lagrange.getCoefficient(i, serverIndicesForUserId, CryptoUtil.ORDER);
-                    combinedB_userId = combinedB_userId.add(bi.multiply(lambda_i));
-                }
-            }
+
+            // ======================== 开始修改 (并行化 OPRF 请求) ========================
+
+            // 1. 并发地向选中的 t 个服务器发送 OPRF 份额请求
+            List<CompletableFuture<NetworkMessage>> userIdFutures = chosenForUserId.stream()
+                    .map(sid -> CompletableFuture.supplyAsync(() ->
+                                    // 在线程池中异步执行网络请求
+                                    networkManager.sendUserIdOPRFShareRequestToServerId(sid, aUserIdHex), executor)
+                            .exceptionally(ex -> {
+                                // 优雅地处理单个请求的异常（如超时），避免整个流程失败
+                                System.err.println("获取服务器 " + sid + " 的 UserID OPRF 份额失败: " + ex.getMessage());
+                                return null; // 返回null，以便后续过滤
+                            }))
+                    .toList();
+
+            // 2. 等待所有请求完成，然后处理结果，最后进行归约（reduce）来计算 combinedB_userId
+            ECPoint combinedB_userId = userIdFutures.stream()
+                    .map(CompletableFuture::join) // 等待每个任务完成并获取其 NetworkMessage 结果
+                    .filter(Objects::nonNull) // 过滤掉因异常而返回 null 的任务
+                    .map(networkManager::deserializeUserIdOPRFShare) // 将 NetworkMessage 反序列化为 Pair<Integer, String>
+                    .filter(Objects::nonNull) // 过滤掉反序列化失败的结果
+                    .map(pair -> {
+                        // 对于每个有效的份额，计算其在拉格朗日插值中的项
+                        int i = pair.getFirst();
+                        ECPoint bi = CryptoUtil.decodePointFromHex(pair.getSecond());
+                        BigInteger lambda_i = Lagrange.getCoefficient(i, serverIndicesForUserId, CryptoUtil.ORDER);
+                        return bi.multiply(lambda_i); // 返回计算出的 ECPoint 项
+                    })
+                    .reduce(CryptoUtil.EC_SPEC.getCurve().getInfinity(), ECPoint::add); // 将所有的 ECPoint 项累加起来
+
+            // ======================== 修改结束 ========================
+
             combinedB_userId = combinedB_userId.normalize();
             BigInteger r_inv_userId = r_userId.modInverse(CryptoUtil.ORDER);
             ECPoint unblinded_userId = combinedB_userId.multiply(r_inv_userId).normalize();
@@ -241,28 +321,12 @@ public class NetworkClient {
 
                     // 2. 解码签名
                     BigInteger finalSig = new BigInteger(certSigHex, 16);
-
                     // 3. 获取公钥参数
                     java.security.interfaces.RSAPublicKey rsaPublicKey = (java.security.interfaces.RSAPublicKey) this.publicKey;
                     BigInteger n = rsaPublicKey.getModulus();
                     BigInteger e = rsaPublicKey.getPublicExponent();
-
-                    // 4. 计算验证公式的左边: sig^e mod n
-                    BigInteger left = finalSig.modPow(e, n);
-
-                    // 5. 计算 t! (delta)
-                    BigInteger delta = BigInteger.ONE;
-                    for (int i = 2; i <= SystemConfig.THRESHOLD; i++) {
-                        delta = delta.multiply(BigInteger.valueOf(i));
-                    }
-
-                    // 6. 计算验证公式的右边: H(m)^{t!} mod n
-                    BigInteger right = messageHash.modPow(delta, n);
-
-                    // 7. 比较两边是否相等
-                    boolean ok = left.equals(right);
-
-                    if (!ok) {
+                    boolean res = ThresholdRSAJWTVerifier.verifyThresholdSignature(messageHash, finalSig, n, e);
+                    if (!res) {
                         System.err.println("❌ RP证书签名校验失败");
                         return;
                     }
@@ -286,8 +350,10 @@ public class NetworkClient {
             infos.put("pid_u", pidUBase64);
             
             // 生成盲化输入（用于加密token份额的TOPRF）
-            byte[] userInput = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
-            ECPoint h1x = CryptoUtil.hashToPoint(userInput);
+//            byte[] userInput = DIGEST.digest((username + password).getBytes(StandardCharsets.UTF_8));
+//            byte[] userInput = (username + password).getBytes(StandardCharsets.UTF_8);
+//            ECPoint h1x = CryptoUtil.hashToCurve(userInput);
+            ECPoint h1x = h1_userId;
             this.r = CryptoUtil.randomScalar();
             ECPoint blindedPoint_a = h1x.multiply(r).normalize();
             
@@ -300,6 +366,7 @@ public class NetworkClient {
                 int sid = rand.nextInt(numOfServer) + 1;
                 chosen.add(sid);
             }
+            long a = System.currentTimeMillis();
             //            System.out.println(chosen);
             List<CompletableFuture<NetworkMessage>> futures = chosen.stream()
                     .map(sid -> CompletableFuture.supplyAsync(() ->
@@ -326,10 +393,12 @@ public class NetworkClient {
                     .flatMap(resp -> networkManager.deserializeTokenShares(resp).stream()) // 将每个成功响应中的份额列表(List)展开成一个流(Stream)
                     .toList(); // 将所有份额收集到一个最终的列表中
 
-
+            long b = System.currentTimeMillis();
 //            long b = System.currentTimeMillis();
 //            System.out.printf("Token Request (t servers): %d ms\n", b - a);
-            
+            q.add(b - a);
+
+
             if (!tokenShares.isEmpty()) {
                 tokenShare = tokenShares;
             } else {
@@ -342,7 +411,7 @@ public class NetworkClient {
     }
     public void verify() {
         List<Pair<Integer, Pair<String, ECPoint>>> processedShares = new ArrayList<>();
-
+        long a = System.currentTimeMillis();
         for (Pair<Integer, Pair<String, String>> share : tokenShare) {
             int serverId = share.getFirst();
             String encryptedToken = share.getSecond().getFirst();
@@ -353,7 +422,9 @@ public class NetworkClient {
         byte[] y = combineTOPRFShare(r, processedShares);
         List<byte[]> keys = generateSymmetricKeys(y);
         String completeToken = ThresholdRSAJWTVerifier.combineJwtShares(keys, processedShares, publicKey, threshold);
-
+        long b = System.currentTimeMillis();
+        w.add(b - a);
+//        System.out.printf("Token Construct: %d ms\n", b - a);
         // 通过RP服务器验证令牌
         NetworkMessage verifyResponse = networkManager.sendTokenVerifyRequest(completeToken);
 
@@ -372,6 +443,9 @@ public class NetworkClient {
         } else {
             System.err.println("❌ Token验证失败: " + networkManager.getErrorMessage(verifyResponse));
         }
+        long c = System.currentTimeMillis();
+//        System.out.printf("Token Verify: %d ms\n", c - b);
+        e.add(c - b);
     }
     
     public static byte[] combineTOPRFShare(BigInteger r, List<Pair<Integer, Pair<String, ECPoint>>> shares) {

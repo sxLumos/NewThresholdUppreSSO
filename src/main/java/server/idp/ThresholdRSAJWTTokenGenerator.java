@@ -16,7 +16,7 @@ public class ThresholdRSAJWTTokenGenerator implements TokenGenerator {
     private final int sid;
 
     /**
-     * Constructor to initialize the generator with its cryptographic material.
+     * Constructor to initialize the generator with i`ts cryptographic material.
      *
      * @param privateKeyShare The server's share of the private key (d_i).
      * @param n The RSA modulus (n), which is public.
@@ -25,6 +25,10 @@ public class ThresholdRSAJWTTokenGenerator implements TokenGenerator {
         this.privateKeyShare = privateKeyShare;
         this.n = n;
         this.sid = sid;
+    }
+
+    public int getSid() {
+        return sid;
     }
 
     /**

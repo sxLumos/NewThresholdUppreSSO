@@ -6,14 +6,15 @@ import server.interfaces.TokenGenerator;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import storage.RedisStorage;
+//import storage.RedisStorage;
 import utils.Pair;
 import utils.SymmetricEncryptor;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap; // 引入 ConcurrentHashMap
 
 import java.math.BigInteger;
 import java.security.PublicKey;
 import java.util.Base64;
-import java.util.Map;
 
 public class IdentityProvider {
     private final int sid; // from 1 to numOfServer
@@ -21,13 +22,17 @@ public class IdentityProvider {
     private final TokenGenerator tokenGenerator;
     private BigInteger TOPRFKeyEnc;
     private BigInteger TOPRFKeyUserID;
-    private final RedisStorage redisStorage;
+    // 新增：使用内存中的Map来替代Redis存储
+    private final Map<String, byte[]> userInfoStorage;
+//    private final RedisStorage redisStorage;
 
     public IdentityProvider(int sid, PublicKey publicKey,TokenGenerator tokenGenerator) {
         this.sid = sid;
         this.publicKey = publicKey;
         this.tokenGenerator = tokenGenerator;
-        this.redisStorage = RedisStorage.getInstance();
+        // 修改：初始化内存存储
+        this.userInfoStorage = new ConcurrentHashMap<>();
+//        this.redisStorage = RedisStorage.getInstance();
     }
 
     public int getSid() {
@@ -43,9 +48,8 @@ public class IdentityProvider {
         this.TOPRFKeyUserID = userIDKeyShare;
     }
 
-
     /**
-     * 存储单个用户的记录到Redis。
+     * 存储单个用户的记录到内存变量中。
      * @param userInfo 用户信息对，格式为 <H(UserID||i), k_i>
      */
     public void storeUserInfo(Pair<byte[], byte[]> userInfo) {
@@ -54,16 +58,19 @@ public class IdentityProvider {
             return;
         }
 
-        byte[] lookupKey = userInfo.getFirst();   // This is H(UserID||i)
+        byte[] lookupKeyBytes = userInfo.getFirst();   // This is H(UserID||i)
         byte[] symmetricKey = userInfo.getSecond(); // This is k_i
 
-        // 使用Redis存储用户数据
-        redisStorage.storeUserData(this.sid, lookupKey, symmetricKey);
-        System.out.println("服务器 " + this.sid + " 已将用户数据存储到Redis。");
+        // 修改：将用户数据存储到内存Map中
+        // 将 byte[] 类型的键转换为Base64字符串以确保作为Map键的可靠性
+        String storageKey = Base64.getEncoder().encodeToString(lookupKeyBytes);
+        this.userInfoStorage.put(storageKey, symmetricKey);
+
+        System.out.println("服务器 " + this.sid + " 已将用户数据存储到内存变量中。");
     }
 
     /**
-     * 从Redis检索用户的对称密钥。
+     * 从内存变量中检索用户的对称密钥。
      * @param lookupKey 查找键 H(UserID||i)
      * @return 对应的对称密钥，如果未找到则返回 null
      */
@@ -71,18 +78,21 @@ public class IdentityProvider {
         if (lookupKey == null) {
             return null;
         }
-        
-        // 从Redis检索用户数据
-        byte[] symmetricKey = redisStorage.retrieveUserData(this.sid, lookupKey);
-        
+
+        // 修改：从内存Map中检索用户数据
+        // 同样将 lookupKey 转换为Base64字符串进行查找
+        String storageKey = Base64.getEncoder().encodeToString(lookupKey);
+        byte[] symmetricKey = this.userInfoStorage.get(storageKey);
+
         if (symmetricKey != null) {
-            System.out.println("服务器 " + this.sid + " 从Redis查找到用户数据。");
+            System.out.println("服务器 " + this.sid + " 从内存中查找到用户数据。");
         } else {
-            System.out.println("服务器 " + this.sid + " 在Redis中未找到对应记录。");
+            System.out.println("服务器 " + this.sid + " 在内存中未找到对应记录。");
         }
-        
+
         return symmetricKey;
     }
+
 
     /**
      * S1步骤: 计算 b_i = a^k_i

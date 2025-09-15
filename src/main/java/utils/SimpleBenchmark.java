@@ -22,12 +22,13 @@ public class SimpleBenchmark {
             task.run();
             timings.add(System.nanoTime() - startTime);
         }
-
+        System.out.println(task.toString());
         // 2. 排序并移除首尾两个极端值
         Collections.sort(timings);
+        System.out.println(timings);
+
         timings.remove(0); // 移除最低
         timings.remove(timings.size() - 1); // 移除最高
-
         // 3. 计算剩余部分的平均值
         double averageNanos = timings.stream()
                 .mapToLong(Long::longValue)

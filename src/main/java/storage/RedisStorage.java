@@ -49,7 +49,7 @@ public class RedisStorage {
             config.setMaxTotal(20);
             config.setMaxIdle(10);
             config.setMinIdle(5);
-            config.setTestOnBorrow(true);
+            config.setTestOnBorrow(false);
             config.setTestOnReturn(true);
             config.setTestWhileIdle(true);
             

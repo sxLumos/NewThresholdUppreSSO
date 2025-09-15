@@ -63,7 +63,7 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
             partialSignatures.add(new PartialSignature(sid, sigValue));
         }
 
-        BigInteger finalSignatureValue = combineSignatures(partialSignatures, n, threshold);
+        BigInteger finalSignatureValue = combineSignatures(partialSignatures, n);
         String finalSignatureBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(finalSignatureValue.toByteArray());
 
         return finalHeader + "." + finalPayload + "." + finalSignatureBase64;
@@ -86,7 +86,7 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
             BigInteger messageHash = new BigInteger(1, digest.digest(content.getBytes(StandardCharsets.UTF_8)));
 
             // This is the core threshold verification logic
-            boolean isValid = verifyThresholdSignature(messageHash, signature, n, e, threshold);
+            boolean isValid = verifyThresholdSignature(messageHash, signature, n, e);
 
             if (!isValid) {
                 throw new SignatureException("Threshold RSA signature verification failed.");
@@ -96,51 +96,59 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
             throw new SignatureException("Verification failed.", e);
         }
     }
-
-    public static BigInteger combineSignatures(List<PartialSignature> partials, BigInteger n, int t) {
-        BigInteger delta = factorial(t);
+    // CORRECTED: This method now handles negative exponents correctly.
+    public static BigInteger combineSignatures(List<PartialSignature> partials, BigInteger n) {
         BigInteger combinedSignature = BigInteger.ONE;
 
-        for (PartialSignature partial : partials) {
-            BigInteger i = BigInteger.valueOf(partial.getServerId());
-            // Calculate integer Lagrange coefficient lambda_i for point 0
-            BigInteger lambda_i = calculateLagrangeCoefficient(i, partials, delta);
+        // Get the indices of the participating servers
+        int[] serverIndices = partials.stream().mapToInt(PartialSignature::getServerId).toArray();
 
-            // Accumulate product: s_i ^ lambda_i mod n
-            BigInteger term = partial.getSignatureShare().modPow(lambda_i, n);
+        for (PartialSignature partial : partials) {
+            int i = partial.getServerId();
+
+            // Calculate the standard Lagrange coefficient using pure integer arithmetic
+            BigInteger lambda_i = calculateStandardLagrangeCoefficient(i, serverIndices);
+
+            BigInteger base = partial.getSignatureShare();
+            BigInteger exponent = lambda_i;
+
+            // Handle negative exponents by using the modular inverse of the base
+            if (exponent.signum() < 0) {
+                base = base.modInverse(n);
+                exponent = exponent.negate();
+            }
+
+            // Accumulate the product: s_i ^ lambda_i mod n
+            BigInteger term = base.modPow(exponent, n);
             combinedSignature = combinedSignature.multiply(term).mod(n);
         }
         return combinedSignature;
     }
 
-    private static BigInteger calculateLagrangeCoefficient(BigInteger i, List<PartialSignature> partials, BigInteger delta) {
-        BigInteger numerator = delta;
+    // CORRECTED: This method now uses pure integer arithmetic, without the incorrect modulus.
+    private static BigInteger calculateStandardLagrangeCoefficient(int i, int[] serverIndices) {
+        BigInteger xi = BigInteger.valueOf(i);
+        BigInteger numerator = BigInteger.ONE;
         BigInteger denominator = BigInteger.ONE;
 
-        for (PartialSignature other : partials) {
-            if (other == null) continue;
-            BigInteger j = BigInteger.valueOf(other.getServerId());
-            if (i.equals(j)) continue;
-
-            numerator = numerator.multiply(j);
-            denominator = denominator.multiply(j.subtract(i));
+        for (int j : serverIndices) {
+            if (i == j) {
+                continue;
+            }
+            BigInteger xj = BigInteger.valueOf(j);
+            // Numerator: product(xj)
+            numerator = numerator.multiply(xj);
+            // Denominator: product(xj - xi)
+            denominator = denominator.multiply(xj.subtract(xi));
         }
+
+        // The division must be exact for Lagrange coefficients
         return numerator.divide(denominator);
     }
 
-    private static BigInteger factorial(int n) {
-        BigInteger result = BigInteger.ONE;
-        for (int i = 2; i <= n; i++) {
-            result = result.multiply(BigInteger.valueOf(i));
-        }
-        return result;
-    }
-
-    public static boolean verifyThresholdSignature(BigInteger messageHash, BigInteger signature, BigInteger n, BigInteger e, int t) {
-        BigInteger delta = factorial(t);
+    public static boolean verifyThresholdSignature(BigInteger messageHash, BigInteger signature, BigInteger n, BigInteger e) {
+        // 标准验证: s^e == H(m)
         BigInteger verificationValue = signature.modPow(e, n);
-        BigInteger expectedValue = messageHash.modPow(delta, n);
-        return verificationValue.equals(expectedValue);
+        return verificationValue.equals(messageHash);
     }
-
 }
