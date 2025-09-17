@@ -148,12 +148,14 @@ public class ServerNetworkManager {
             BigInteger keyShareEnc = new BigInteger((String) data.get("keyShareEnc"), 16);
             BigInteger keyShareUserID = new BigInteger((String) data.get("keyShareUserID"), 16);
             Map<String, Object> recordData = (Map<String, Object>) data.get("serverStoreRecord");
-            Pair<byte[], byte[]> serverStoreRecord = Pair.of(
-                    CryptoUtil.hexToBytes((String) recordData.get("lookupKey"))
-                    , CryptoUtil.hexToBytes((String) recordData.get("symmetricKey")));
+            IdentityProvider.UserInfo userInfo = new IdentityProvider.UserInfo(keyShareEnc,
+                    keyShareUserID, CryptoUtil.hexToBytes((String) recordData.get("symmetricKey")));
+            Pair<String, IdentityProvider.UserInfo> serverStoreRecord = Pair.of(
+                    (String) recordData.get("lookupKey")
+                    , userInfo);
 
             // 执行用户注册
-            idp.performUserRegister(keyShareEnc, keyShareUserID, serverStoreRecord);
+            idp.performUserRegister(serverStoreRecord);
 
             // 创建成功响应
             Map<String, Object> responseData = new HashMap<>();
@@ -177,7 +179,7 @@ public class ServerNetworkManager {
             Map<String, Object> data = request.getData();
             
             // 反序列化数据
-            byte[] userID = CryptoUtil.hexToBytes((String) data.get("userID"));
+            String userName = (String) data.get("userName");
             String blindedPointHex = (String) data.get("blindedPoint");
             long startTimeSec = ((Number) data.get("startTimeSec")).longValue();
             Map<String, Object> info = (Map<String, Object>) data.get("info");
@@ -186,7 +188,7 @@ public class ServerNetworkManager {
             ECPoint blindedPoint = CryptoUtil.decodePointFromHex(blindedPointHex);
             
             // 仅生成本地服务器份额
-            Pair<Integer, Pair<String, ECPoint>> localShare = idp.generateTokenShareFor(userID, blindedPoint, startTimeSec, info);
+            Pair<Integer, Pair<String, ECPoint>> localShare = idp.generateTokenShareFor(userName, blindedPoint, startTimeSec, info);
 
             Map<String, Object> responseData = new HashMap<>();
             responseData.put("success", localShare != null);
@@ -256,11 +258,13 @@ public class ServerNetworkManager {
     private NetworkMessage handleUserIdOPRFRequest(NetworkMessage request) {
         try {
             Map<String, Object> data = request.getData();
+            String userName = (String) data.get("userName");
             String blindedPointHex = (String) data.get("blindedPoint");
             if (blindedPointHex == null) return createErrorResponse(request.getRequestId(), "缺少盲化点");
             ECPoint blindedPoint = CryptoUtil.decodePointFromHex(blindedPointHex);
             int sid = this.serverId + 1;
-            ECPoint bi = idp.evaluateKeyUserID(blindedPoint);
+            BigInteger keyShareID = this.idp.retrieveKeyShareEnc(userName);
+            ECPoint bi = idp.evaluateKeyUserID(keyShareID, blindedPoint);
 
             Map<String, Object> resp = new HashMap<>();
             resp.put("success", true);

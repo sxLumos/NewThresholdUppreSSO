@@ -50,8 +50,7 @@ public class CryptoUtil {
     }
 
     /**
-     * [安全实现] H1: 将任意字节数组通过 "Hash-and-Try" 方法安全地哈希到椭圆曲线上。
-     * 此方法符合现代密码学协议对哈希到曲线函数的要求，输出点的离散对数是未知的。
+     * [安全实现] H1: hash_to_curve RFC 9380 secp256r1实现
      * @param input 任意长度的输入数据
      * @return 曲线上的一个有效点
      */
@@ -78,6 +77,42 @@ public class CryptoUtil {
             throw new RuntimeException("Hashing algorithm not found", e);
         }
     }
+    // Helper to calculate factorial
+    public static BigInteger factorial(int n) {
+        BigInteger result = BigInteger.ONE;
+        for (int i = 2; i <= n; i++) {
+            result = result.multiply(BigInteger.valueOf(i));
+        }
+        return result;
+    }
+
+    /**
+     * 实现 H₁ 哈希函数: H₁(x, g) -> {0,1}ˡ
+     * 将消息 x 和椭圆曲线上的点 g 联合哈希为一个固定长度的字节数组。
+     * 对应于图中 H₁: X × G → {0,1}ˡ 的功能。
+     *
+     * @param x 消息，来自消息空间 X (例如，用户名的字节数组)
+     * @param g 曲线上的点，来自群 G
+     * @return 哈希值 H₁(x, g)
+     */
+    public static byte[] h2_hashMessageAndPoint(byte[] x, ECPoint g) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+
+            // 1. 先更新消息 x 的字节
+            digest.update(x);
+
+            // 2. 获取点的压缩字节表示
+            byte[] encodedPoint = g.getEncoded(true);
+
+            // 3. 再更新点的字节，并计算最终的哈希值
+            // 这种方式等同于计算 H(x || g)，并且效率更高
+            return digest.digest(encodedPoint);
+
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("Hashing algorithm 'SHA-256' not found", e);
+        }
+    }
 
     public static BigInteger randomScalar() {
         SecureRandom random = new SecureRandom();
@@ -92,7 +127,7 @@ public class CryptoUtil {
         // 重要：这里应该使用安全的 hashToCurve
         ECPoint h1x = CryptoUtil.hashToCurve(x);
         ECPoint prfResultPoint = h1x.multiply(masterKey).normalize();
-        return CryptoUtil.hashPointToBytes(prfResultPoint);
+        return CryptoUtil.h2_hashMessageAndPoint(x, prfResultPoint);
     }
 
     public static String bytesToHex(byte[] bytes) {

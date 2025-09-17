@@ -35,8 +35,8 @@ public class NetworkClient {
     private final ClientNetworkManager networkManager;
     private List<Pair<Integer, Pair<String, String>>> tokenShare;
     private static final int benchmarkRuns = 10;
-    private BigInteger r;
-//    private final RedisStorage redisStorage;
+    private BigInteger t; // 伪身份盲化的t
+    private BigInteger r; // TOPRF盲化的r(计算对称加密的key)
     private static final ExecutorService executor;
     private PublicKey publicKey;
     List<Long> q = new ArrayList<>();
@@ -161,7 +161,6 @@ public class NetworkClient {
         this.username = username;
         this.password = password;
         this.networkManager = new ClientNetworkManager();
-//        this.redisStorage = RedisStorage.getInstance();
     }
     
     public void register(int n, int t) {
@@ -179,13 +178,15 @@ public class NetworkClient {
             List<Pair<Integer, BigInteger>> privateKeyShareUserID = TOPRFShareUserID.getSecond();
             byte[] UserID = CryptoUtil.calculateExpectedOutput(input, masterPrivateKeyUserID);
             
-            List<Pair<byte[], byte[]>> serverStoreRecord = new ArrayList<>();
+            List<Pair<String, byte[]>> serverStoreRecord = new ArrayList<>();
+//            DIGEST.update(username.getBytes(StandardCharsets.UTF_8));
+//            byte[] key = DIGEST.digest();
             for (int i = 1; i <= n; i++) {
-                DIGEST.update(UserID);
-                DIGEST.update(BigInteger.valueOf(i).toByteArray());
-                byte[] key = DIGEST.digest();
+//                DIGEST.update(UserID);
+//                DIGEST.update(BigInteger.valueOf(i).toByteArray());
+
                 byte[] value = serverSymmetricKeys.get(i - 1);
-                serverStoreRecord.add(Pair.of(key, value));
+                serverStoreRecord.add(Pair.of(username, value));
             }
             
 //            saveUserIDToRedis(UserID);
@@ -260,7 +261,7 @@ public class NetworkClient {
             List<CompletableFuture<NetworkMessage>> userIdFutures = chosenForUserId.stream()
                     .map(sid -> CompletableFuture.supplyAsync(() ->
                                     // 在线程池中异步执行网络请求
-                                    networkManager.sendUserIdOPRFShareRequestToServerId(sid, aUserIdHex), executor)
+                                    networkManager.sendUserIdOPRFShareRequestToServerId(sid, username, aUserIdHex), executor)
                             .exceptionally(ex -> {
                                 // 优雅地处理单个请求的异常（如超时），避免整个流程失败
                                 System.err.println("获取服务器 " + sid + " 的 UserID OPRF 份额失败: " + ex.getMessage());
@@ -288,7 +289,8 @@ public class NetworkClient {
             combinedB_userId = combinedB_userId.normalize();
             BigInteger r_inv_userId = r_userId.modInverse(CryptoUtil.ORDER);
             ECPoint unblinded_userId = combinedB_userId.multiply(r_inv_userId).normalize();
-            byte[] UserID = CryptoUtil.hashPointToBytes(unblinded_userId);
+            byte[] input = (username + password).getBytes(StandardCharsets.UTF_8);
+            byte[] UserID = CryptoUtil.h2_hashMessageAndPoint(input, unblinded_userId);
             
             // 1) 从RP获取 ID_RP 与 Cert_RP
             NetworkMessage rpCertResp = networkManager.sendRPCertRequest();
@@ -338,6 +340,7 @@ public class NetworkClient {
 
             // 3) 生成随机数t和伪身份
             BigInteger t = CryptoUtil.randomScalar();
+            this.t = t;
             ECPoint PID_RP = ID_RP.multiply(t).normalize();
             
             BigInteger userIDScalar = CryptoUtil.hashToScalar(UserID);
@@ -373,7 +376,7 @@ public class NetworkClient {
                                     // 将网络请求作为任务提交到线程池
                                     networkManager.sendTokenShareRequestToServerId(
                                             sid,
-                                            UserID,
+                                            username,
                                             CryptoUtil.bytesToHex(blindedPoint_a.getEncoded(true)),
                                             startTimeSec,
                                             infos
@@ -418,25 +421,17 @@ public class NetworkClient {
             ECPoint ecPoint = CryptoUtil.decodePointFromHex(share.getSecond().getSecond());
             processedShares.add(Pair.of(serverId, Pair.of(encryptedToken, ecPoint)));
         }
-
-        byte[] y = combineTOPRFShare(r, processedShares);
+        byte[] input = (username + password).getBytes(StandardCharsets.UTF_8);
+        byte[] y = combineTOPRFShare(input, r, processedShares);
         List<byte[]> keys = generateSymmetricKeys(y);
         String completeToken = ThresholdRSAJWTVerifier.combineJwtShares(keys, processedShares, publicKey, threshold);
         long b = System.currentTimeMillis();
         w.add(b - a);
 //        System.out.printf("Token Construct: %d ms\n", b - a);
         // 通过RP服务器验证令牌
-        NetworkMessage verifyResponse = networkManager.sendTokenVerifyRequest(completeToken);
+        NetworkMessage verifyResponse = networkManager.sendTokenVerifyRequest(completeToken, this.t);
 
         if (networkManager.isSuccessResponse(verifyResponse)) {
-            // 去盲化
-//                    String pidUBase64FromJwt = (String) verifyResponse.getData().get("pid_u");
-//                    byte[] pidUBytes = Base64.getUrlDecoder().decode(pidUBase64FromJwt);
-//                    ECPoint blindedPidUFromJwt = CryptoUtil.EC_SPEC.getCurve().decodePoint(pidUBytes);
-//
-//                    BigInteger t_inverse = t.modInverse(CryptoUtil.ORDER);
-//                    ECPoint final_IDU_IDRP = blindedPidUFromJwt.multiply(t_inverse).normalize();
-            // final_IDU_IDRP 可以用于后续的身份验证逻辑
 
             System.out.println("\n🎉 SUCCESS: 登录成功！");
             System.out.println("Token验证通过RP服务器完成");
@@ -448,7 +443,7 @@ public class NetworkClient {
         e.add(c - b);
     }
     
-    public static byte[] combineTOPRFShare(BigInteger r, List<Pair<Integer, Pair<String, ECPoint>>> shares) {
+    public static byte[] combineTOPRFShare(byte[] x, BigInteger r, List<Pair<Integer, Pair<String, ECPoint>>> shares) {
         BigInteger order = CryptoUtil.ORDER;
         int[] serverIndices = shares.stream().mapToInt(Pair::getFirst).toArray();
         ECPoint combinedResultB = CryptoUtil.EC_SPEC.getCurve().getInfinity();
@@ -466,7 +461,7 @@ public class NetworkClient {
         BigInteger r_inv = r.modInverse(order);
         ECPoint unblindedResult = combinedResultB.multiply(r_inv).normalize();
         
-        return CryptoUtil.hashPointToBytes(unblindedResult);
+        return CryptoUtil.h2_hashMessageAndPoint(x, unblindedResult);
     }
     
     public static List<byte[]> generateSymmetricKeys(byte[] input) {
@@ -504,30 +499,4 @@ public class NetworkClient {
         }
         return Pair.of(masterPrivateKey, TOPRFKeyShare);
     }
-    
-//    public void saveUserIDToRedis(byte[] userID) {
-//        try {
-//            String userKey = USER_ID_KEY + ":" + username;
-//            String userIDHex = CryptoUtil.bytesToHex(userID);
-//            redisStorage.storeClientData(userKey, userIDHex);
-//            System.out.println("✅ 用户ID已保存到Redis");
-//        } catch (Exception e) {
-//            System.err.println("❌ 保存用户ID到Redis失败: " + e.getMessage());
-//            throw new RuntimeException("Failed to save UserID to Redis.", e);
-//        }
-//    }
-    
-//    public byte[] loadUserIDFromRedis() {
-//        try {
-//            String userKey = USER_ID_KEY + ":" + username;
-//            String userIDHex = redisStorage.retrieveClientData(userKey);
-//            if (userIDHex != null) {
-//                return CryptoUtil.hexToBytes(userIDHex);
-//            }
-//            return null;
-//        } catch (Exception e) {
-//            System.err.println("❌ 从Redis加载用户ID失败: " + e.getMessage());
-//            return null;
-//        }
-//    }
 }

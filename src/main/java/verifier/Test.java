@@ -14,7 +14,7 @@ import java.util.List;
 
 public class Test {
     // --- 测试参数 ---
-    private static final int NUM_OF_SERVERS = 5; // 系统中的服务器总数
+    private static final int NUM_OF_SERVERS = 10; // 系统中的服务器总数
     private static final int THRESHOLD = 3;      // 签名的门限值 (t)
 
     // --- 测试对象 ---
@@ -26,7 +26,9 @@ public class Test {
     public static void main(String[] args) throws Exception {
         Test s = new Test();
         s.setUp();
-        s.endToEnd_WithExactThresholdShares_ShouldSucceed();
+        for(int i = 0;i < 10;i ++ ) {
+            s.endToEnd_WithExactThresholdShares_ShouldSucceed();
+        }
     }
     void setUp() {
         // 1. 初始化密钥生成器并生成密钥和份额
@@ -79,7 +81,5 @@ public class Test {
         // **注意：这里调用你修改后的、标准的 verifyThresholdSignature 方法**
         boolean isVerified = ThresholdRSAJWTVerifier.verifyThresholdSignature(messageHash, finalSignature, n, e);
         System.out.println(isVerified);
-        // --- 3. 断言 (Assert) ---
-
     }
 }

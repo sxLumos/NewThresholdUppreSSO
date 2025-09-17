@@ -9,7 +9,7 @@ public final class SystemConfig {
 
     // Core parameters
     public static final int NUM_SERVERS = 10;   // number of IdP servers
-    public static final int THRESHOLD = 10;      // threshold t
+    public static final int THRESHOLD = 7;      // threshold t
 
     // Networking
     public static final String SERVER_HOST = "localhost";

@@ -295,8 +295,6 @@ public class RPServerNetworkManager {
     private NetworkMessage processRPRequest(NetworkMessage request) {
         try {
             switch (request.getMessageType()) {
-//                case MessageTypes.RP_LOGIN_REQUEST:
-//                    return handleRPLoginRequest(request);
                 case MessageTypes.TOKEN_VERIFY_REQUEST:
                     return handleTokenVerifyRequest(request);
                 case MessageTypes.RP_CERT_REQUEST:
@@ -310,37 +308,6 @@ public class RPServerNetworkManager {
             return createErrorResponse(request.getRequestId(), "RP服务器内部错误: " + e.getMessage());
         }
     }
-
-    /**
-     * 处理RP登录请求
-     */
-    private NetworkMessage handleRPLoginRequest(NetworkMessage request) {
-        try {
-            Map<String, Object> data = request.getData();
-
-            // 获取用户凭据
-            String username = (String) data.get("username");
-            String password = (String) data.get("password");
-
-            if (username == null || password == null) {
-                return createErrorResponse(request.getRequestId(), "用户名或密码不能为空");
-            }
-
-            // 这里可以添加用户认证逻辑
-            // 现在简化处理，直接返回成功
-            Map<String, Object> responseData = new HashMap<>();
-            responseData.put("success", true);
-            responseData.put("message", "RP登录成功");
-            responseData.put("username", username);
-
-            return new NetworkMessage(MessageTypes.RP_LOGIN_RESPONSE, request.getRequestId(), responseData);
-
-        } catch (Exception e) {
-            System.err.println("❌ RP登录请求处理失败: " + e.getMessage());
-            return createErrorResponse(request.getRequestId(), "RP登录失败: " + e.getMessage());
-        }
-    }
-
     /**
      * 处理Token验证请求
      */
@@ -350,6 +317,7 @@ public class RPServerNetworkManager {
 
             // 获取JWT Token
             String jwtToken = (String) data.get("jwtToken");
+            BigInteger t = new BigInteger((String) data.get("t"), 16);
             if (jwtToken == null) {
                 return createErrorResponse(request.getRequestId(), "JWT Token不能为空");
             }
@@ -364,18 +332,17 @@ public class RPServerNetworkManager {
             Map<String, Object> responseData = new HashMap<>();
             responseData.put("success", true);
             responseData.put("message", "Token验证成功");
-//            responseData.put("issuer", verifiedJwt.getIssuer());
-//            responseData.put("subject", verifiedJwt.getSubject());
-//            responseData.put("issuedAt", verifiedJwt.getIssuedAt());
-//            responseData.put("expiresAt", verifiedJwt.getExpiresAt());
+            //  Get the blinded PID_U from the verified JWT claim
+            String pidUBase64FromJwt = verifiedJwt.getClaim("pid_u").asString();
+            byte[] pidUBytes = Base64.getUrlDecoder().decode(pidUBase64FromJwt);
+            ECPoint blindedPidUFromJwt = CryptoUtil.EC_SPEC.getCurve().decodePoint(pidUBytes);
 
-//             提取自定义声明
-//            if (verifiedJwt.getClaim("pid_rp") != null) {
-//                responseData.put("pid_rp", verifiedJwt.getClaim("pid_rp").asString());
-//            }
-//            if (verifiedJwt.getClaim("pid_u") != null) {
-//                responseData.put("pid_u", verifiedJwt.getClaim("pid_u").asString());
-//            }
+            // 9. Calculate the modular inverse of the blinding factor 't'
+            BigInteger t_inverse = t.modInverse(CryptoUtil.ORDER);
+
+            // 10. Unblind the point to get the final result: [ID_U]ID_RP
+            ECPoint final_IDU_IDRP = blindedPidUFromJwt.multiply(t_inverse).normalize();
+            System.out.printf("Unique Account: %s", CryptoUtil.bytesToHex(final_IDU_IDRP.getEncoded(true)));
 
             return new NetworkMessage(MessageTypes.TOKEN_VERIFY_RESPONSE, request.getRequestId(), responseData);
 

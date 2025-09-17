@@ -109,12 +109,13 @@ public class ClientNetworkManager {
 
     public NetworkMessage sendUserRegisterRequest(int serverId, BigInteger keyShareEnc,
                                                   BigInteger keyShareUserID,
-                                                  Pair<byte[], byte[]> serverStoreRecord) {
+                                                  Pair<String, byte[]> serverStoreRecord) {
         Map<String, Object> data = new HashMap<>();
         data.put("keyShareEnc", keyShareEnc.toString(16));
         data.put("keyShareUserID", keyShareUserID.toString(16));
         Map<String, String> recordData = new HashMap<>();
-        recordData.put("lookupKey", CryptoUtil.bytesToHex(serverStoreRecord.getFirst()));
+//        recordData.put("lookupKey", CryptoUtil.bytesToHex(serverStoreRecord.getFirst()));
+        recordData.put("lookupKey", serverStoreRecord.getFirst());
         recordData.put("symmetricKey", CryptoUtil.bytesToHex(serverStoreRecord.getSecond()));
         data.put("serverStoreRecord", recordData);
 
@@ -124,9 +125,10 @@ public class ClientNetworkManager {
         return executeRequest(SERVER_HOST, serverPort, request, "register");
     }
 
-    public NetworkMessage sendTokenVerifyRequest(String jwtToken) {
+    public NetworkMessage sendTokenVerifyRequest(String jwtToken, BigInteger t) {
         Map<String, Object> data = new HashMap<>();
         data.put("jwtToken", jwtToken);
+        data.put("t", t.toString(16));
         NetworkMessage request = new NetworkMessage(MessageTypes.TOKEN_VERIFY_REQUEST, generateRequestId(), data);
         return executeRequest(SERVER_HOST, RP_SERVER_PORT, request, "login");
     }
@@ -136,17 +138,18 @@ public class ClientNetworkManager {
         return executeRequest(SERVER_HOST, RP_SERVER_PORT, request, "login");
     }
 
-    public NetworkMessage sendUserIdOPRFShareRequestToServerId(int serverId, String blindedPointHex) {
+    public NetworkMessage sendUserIdOPRFShareRequestToServerId(int serverId, String userName, String blindedPointHex) {
         Map<String, Object> data = new HashMap<>();
         data.put("blindedPoint", blindedPointHex);
+        data.put("userName", userName);
         NetworkMessage request = new NetworkMessage(MessageTypes.USERID_OPRF_REQUEST, generateRequestId(), data);
         int serverPort = BASE_PORT + (serverId - 1);
         return executeRequest(SERVER_HOST, serverPort, request, "login");
     }
 
-    public NetworkMessage sendTokenShareRequestToServerId(int serverId, byte[] userID, String blindedPointHex, long startTimeSec, Map<String, Object> info) {
+    public NetworkMessage sendTokenShareRequestToServerId(int serverId, String userName, String blindedPointHex, long startTimeSec, Map<String, Object> info) {
         Map<String, Object> data = new HashMap<>();
-        data.put("userID", CryptoUtil.bytesToHex(userID));
+        data.put("userName", userName);
         data.put("blindedPoint", blindedPointHex);
         data.put("startTimeSec", startTimeSec);
         data.put("info", info);

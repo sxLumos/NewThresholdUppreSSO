@@ -1,6 +1,7 @@
 package server.idp;
 
 import server.interfaces.KeyGenerator;
+import utils.CryptoUtil;
 import utils.Pair;
 
 import java.io.File;
@@ -26,10 +27,10 @@ public class ThresholdRSAKeyGenerator implements KeyGenerator {
     private List<Pair<Integer, BigInteger>> privateKeyShares;
     private int numOfServer;
     private int threshold;
+    private BigInteger delta; // The common factor Delta = NUM_OF_SERVERS!
     private static final int KEY_SIZE = 2048;
     public static final String PRIVATE_KEY_SHARE = "privateKeyShare";
     public static final String PUBLIC_KEY = "n";
-    private static final String KEY_FILENAME = "threshold_keys.properties";
 
     // 1≤threshold≤numOfServer and threshold>(numOfServer/2)
     public ThresholdRSAKeyGenerator(int numOfServer, int threshold, boolean createNewKey) {
@@ -38,110 +39,49 @@ public class ThresholdRSAKeyGenerator implements KeyGenerator {
             this.numOfServer = numOfServer;
             this.threshold = threshold;
             System.out.println("▶️ Generating new threshold keys...");
-            this.generateKey();
-//            File keyFile = new File(KEY_FILENAME);
-//            // If createNew is true OR if we want to load but the file doesn't exist, generate new keys.
-//            if (createNewKey || !keyFile.exists()) {
-//                System.out.println("▶️ Generating new threshold keys...");
-//                this.generateKey();
-//            } else {
-//                System.out.println("▶️ Loading existing threshold keys from " + KEY_FILENAME + "...");
-//                this.loadKeyFromFile();
-//            }
+            // Calculate the common factor Delta
+            this.delta = CryptoUtil.factorial(numOfServer);
+            this.generateKey(delta);
         } else {
             throw new IllegalArgumentException("Threshold and numOfServer do not meet requirement.");
         }
     }
 
-    public void generateKey() {
+    // Modified to accept delta
+    public void generateKey(BigInteger delta) {
         SecureRandom random = new SecureRandom();
 
-        // 1. Generate RSA parameters (p, q, n, e, d, lambda)
+        // 1. Generate RSA parameters
         BigInteger p = new BigInteger(KEY_SIZE / 2, 100, random);
         BigInteger q = new BigInteger(KEY_SIZE / 2, 100, random);
         this.n = p.multiply(q);
-
         BigInteger pMinus1 = p.subtract(BigInteger.ONE);
         BigInteger qMinus1 = q.subtract(BigInteger.ONE);
-        BigInteger lambda = pMinus1.multiply(qMinus1).divide(pMinus1.gcd(qMinus1)); // lambda(n) = lcm(p-1, q-1)
-
-        this.e = new BigInteger("65537"); // Common public exponent
+        BigInteger lambda = pMinus1.multiply(qMinus1).divide(pMinus1.gcd(qMinus1));
+        this.e = new BigInteger("65537");
         this.d = e.modInverse(lambda);
 
         // 2. Create a polynomial P(x) of degree threshold-1 over Z_lambda
-        // P(x) = d + a1*x + a2*x^2 + ...
+        // ** The secret to be shared is now d * delta, not just d **
+        BigInteger secret = d.multiply(delta);
+
         BigInteger[] coefficients = new BigInteger[this.threshold];
-        coefficients[0] = d; // P(0) = d
+        coefficients[0] = secret; // P(0) = d * delta
         for (int i = 1; i < this.threshold; i++) {
             coefficients[i] = new BigInteger(lambda.bitLength(), random).mod(lambda);
         }
+
+        // 3. Generate shares
         this.privateKeyShares = new ArrayList<>();
         for (int i = 1; i <= this.numOfServer; i++) {
             BigInteger xi = BigInteger.valueOf(i);
             BigInteger share = BigInteger.ZERO;
-            // Evaluate P(i) mod lambda
             for (int j = 0; j < this.threshold; j++) {
                 BigInteger term = coefficients[j].multiply(xi.pow(j)).mod(lambda);
                 share = share.add(term).mod(lambda);
             }
             this.privateKeyShares.add(Pair.of(i, share));
         }
-        // After generating, save the keys to a file.
-//        saveKeyToFile();
-    }
-
-    public void saveKeyToFile() {
-        Properties props = getProperties();
-
-        try (FileOutputStream fos = new FileOutputStream(KEY_FILENAME)) {
-            props.store(fos, "Threshold RSA Key Data. DO NOT EDIT MANUALLY.");
-            System.out.println("✅ Keys successfully saved to " + KEY_FILENAME);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to save keys to file.", e);
-        }
-    }
-
-    private Properties getProperties() {
-        Properties props = new Properties();
-        props.setProperty("n", this.n.toString(16));
-        props.setProperty("e", this.e.toString(16));
-        props.setProperty("d", this.d.toString(16));
-        props.setProperty("numOfServer", String.valueOf(this.numOfServer));
-        props.setProperty("threshold", String.valueOf(this.threshold));
-
-        // The property key will be "share.{ID}", e.g., "share.1", "share.2".
-        for (Pair<Integer, BigInteger> sharePair : this.privateKeyShares) {
-            props.setProperty("share." + sharePair.getFirst(), sharePair.getSecond().toString(16));
-        }
-
-        return props;
-    }
-
-    public void loadKeyFromFile() {
-        Properties props = new Properties();
-        try (FileInputStream fis = new FileInputStream(KEY_FILENAME)) {
-            props.load(fis);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to load keys from file: " + KEY_FILENAME, e);
-        }
-
-        this.n = new BigInteger(props.getProperty("n"), 16);
-        this.e = new BigInteger(props.getProperty("e"), 16);
-        this.d = new BigInteger(props.getProperty("d"), 16);
-        // We use the values from the file to ensure consistency
-        this.numOfServer = Integer.parseInt(props.getProperty("numOfServer"));
-        this.threshold = Integer.parseInt(props.getProperty("threshold"));
-
-        this.privateKeyShares = new ArrayList<>();
-        for (int i = 1; i <= this.numOfServer; i++) {
-            String hexShare = props.getProperty("share." + i);
-            if (hexShare == null) {
-                throw new RuntimeException("Key file is corrupt or missing share for server ID " + i);
-            }
-            // FIX 5: Reconstruct the Pair object from the loaded ID and value.
-            this.privateKeyShares.add(Pair.of(i, new BigInteger(hexShare, 16)));
-        }
-        System.out.println("✅ Keys successfully loaded.");
     }
 
     @Override

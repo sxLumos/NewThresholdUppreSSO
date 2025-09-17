@@ -3,7 +3,9 @@ package verifier;
 
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.interfaces.DecodedJWT;
+import config.SystemConfig;
 import org.bouncycastle.math.ec.ECPoint;
+import utils.CryptoUtil;
 import utils.Pair;
 import utils.SymmetricEncryptor;
 import verifier.interfaces.JWTVerifier;
@@ -62,7 +64,6 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
             BigInteger sigValue = new BigInteger(1, Base64.getUrlDecoder().decode(parts[2]));
             partialSignatures.add(new PartialSignature(sid, sigValue));
         }
-
         BigInteger finalSignatureValue = combineSignatures(partialSignatures, n);
         String finalSignatureBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(finalSignatureValue.toByteArray());
 
@@ -96,37 +97,35 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
             throw new SignatureException("Verification failed.", e);
         }
     }
-    // CORRECTED: This method now handles negative exponents correctly.
     public static BigInteger combineSignatures(List<PartialSignature> partials, BigInteger n) {
+        BigInteger delta = CryptoUtil.factorial(SystemConfig.NUM_SERVERS);
         BigInteger combinedSignature = BigInteger.ONE;
-
-        // Get the indices of the participating servers
         int[] serverIndices = partials.stream().mapToInt(PartialSignature::getServerId).toArray();
 
         for (PartialSignature partial : partials) {
             int i = partial.getServerId();
 
-            // Calculate the standard Lagrange coefficient using pure integer arithmetic
-            BigInteger lambda_i = calculateStandardLagrangeCoefficient(i, serverIndices);
+            // Calculate the integer Lagrange coefficient L_i = Δ * λ_i
+            BigInteger lambda_i = calculateIntegerLagrangeCoefficient(i, serverIndices, delta);
 
             BigInteger base = partial.getSignatureShare();
             BigInteger exponent = lambda_i;
 
-            // Handle negative exponents by using the modular inverse of the base
             if (exponent.signum() < 0) {
                 base = base.modInverse(n);
                 exponent = exponent.negate();
             }
 
-            // Accumulate the product: s_i ^ lambda_i mod n
             BigInteger term = base.modPow(exponent, n);
             combinedSignature = combinedSignature.multiply(term).mod(n);
         }
         return combinedSignature;
     }
 
-    // CORRECTED: This method now uses pure integer arithmetic, without the incorrect modulus.
-    private static BigInteger calculateStandardLagrangeCoefficient(int i, int[] serverIndices) {
+    /**
+     * Calculate the integer Lagrange coefficient Lᵢ = Δ * ∏(j≠i) (-j)/(i-j)
+     */
+    private static BigInteger calculateIntegerLagrangeCoefficient(int i, int[] serverIndices, BigInteger delta) {
         BigInteger xi = BigInteger.valueOf(i);
         BigInteger numerator = BigInteger.ONE;
         BigInteger denominator = BigInteger.ONE;
@@ -136,19 +135,45 @@ public class ThresholdRSAJWTVerifier implements JWTVerifier {
                 continue;
             }
             BigInteger xj = BigInteger.valueOf(j);
-            // Numerator: product(xj)
-            numerator = numerator.multiply(xj);
-            // Denominator: product(xj - xi)
-            denominator = denominator.multiply(xj.subtract(xi));
+            // Numerator: product of (-j)
+            numerator = numerator.multiply(xj.negate());
+            // Denominator: product of (i - j)
+            denominator = denominator.multiply(xi.subtract(xj));
         }
 
-        // The division must be exact for Lagrange coefficients
-        return numerator.divide(denominator);
+        // Calculate L_i = delta * numerator / denominator. This is guaranteed to be an integer.
+        return delta.multiply(numerator).divide(denominator);
     }
 
+//    public static boolean verifyThresholdSignature(BigInteger messageHash, BigInteger signature, BigInteger n, BigInteger e) {
+//        // 标准验证: s^e == H(m)
+//        BigInteger verificationValue = signature.modPow(e, n);
+//        return verificationValue.equals(messageHash);
+//    }
+
+    /**
+     * 使用修正后的协议验证门限签名。
+     * 此方法会执行两次模幂运算来验证 s^e ≡ (H(m))^(Δ^2) (mod n)。
+     *
+     * @param messageHash 原始消息的哈希值 H(m)
+     * @param signature   待验证的最终聚合签名 s
+     * @param n           RSA 公共模数 n
+     * @param e           RSA 公共指数 e
+     * @param delta       修正因子 Δ (等于服务器总数的阶乘)
+     * @return 如果签名有效则返回 true，否则返回 false
+     */
     public static boolean verifyThresholdSignature(BigInteger messageHash, BigInteger signature, BigInteger n, BigInteger e) {
-        // 标准验证: s^e == H(m)
-        BigInteger verificationValue = signature.modPow(e, n);
-        return verificationValue.equals(messageHash);
+        BigInteger delta = CryptoUtil.factorial(SystemConfig.NUM_SERVERS);
+        // 第一次模幂：计算等式左边 s^e mod n
+        BigInteger signatureVerification = signature.modPow(e, n);
+
+        // 准备计算等式右边
+        BigInteger deltaSquared = delta.multiply(delta);
+
+        // 第二次模幂：计算等式右边 (H(m))^(Δ^2) mod n
+        BigInteger targetVerification = messageHash.modPow(deltaSquared, n);
+
+        // 比较两边的结果
+        return signatureVerification.equals(targetVerification);
     }
 }
